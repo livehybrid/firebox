@@ -30,7 +30,7 @@ from sink import Sink  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKS = ROOT / "fixtures" / "packs"
-FIREBOX = Path(os.environ.get("FIREBOX_BIN", ROOT / "target" / "release" / "firebox"))
+FIREBOX = Path(os.environ.get("FIREBOX_BIN", ROOT / "target" / "release" / "firebox")).resolve()
 EVENTGEN_ROOT = os.environ.get("EVENTGEN_ROOT")
 
 

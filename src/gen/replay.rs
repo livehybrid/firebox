@@ -13,6 +13,7 @@ use crate::clock;
 use crate::engine::{ReplayLine, Sample, Stats};
 use crate::envelope::{EventOut, Meta, TimeVal};
 use crate::output::Writer;
+use crate::pyre::RxLocal;
 use crate::strftime::Ts;
 use crate::strptime::strptime;
 use crate::timeparse;
@@ -88,7 +89,14 @@ fn time_val(dt: &NaiveDateTime) -> TimeVal {
     TimeVal::Float(ts.epoch as f64 + ts.micro as f64 / 1e6)
 }
 
-fn render(s: &Sample, rl: &ReplayLine, event_time: &NaiveDateTime, ctx: &mut EventCtx<'_>) -> EventOut {
+fn render(
+    s: &Sample,
+    rl: &ReplayLine,
+    event_time: &NaiveDateTime,
+    ctx: &mut EventCtx<'_>,
+    locals: &mut [RxLocal],
+    host_local: &mut Option<RxLocal>,
+) -> EventOut {
     let line = &s.data.lines[rl.idx];
     ctx.begin_event();
     let ts = ts_of(event_time);
@@ -96,13 +104,13 @@ fn render(s: &Sample, rl: &ReplayLine, event_time: &NaiveDateTime, ctx: &mut Eve
     ctx.et = Some(ts);
     ctx.lt = Some(ts);
     let mut raw = line.raw.clone();
-    for t in &s.tokens {
-        t.replace(&mut raw, ctx);
+    for (t, l) in s.tokens.iter().zip(locals.iter_mut()) {
+        t.replace_local(&mut raw, ctx, l);
     }
     let mut meta = line.meta.clone().unwrap_or_else(|| s.meta.clone());
-    if let Some(ht) = &s.host_token {
+    if let (Some(ht), Some(hl)) = (&s.host_token, host_local.as_mut()) {
         let mut h: String = meta.host.as_deref().unwrap_or("").to_string();
-        ht.replace(&mut h, ctx);
+        ht.replace_local(&mut h, ctx, hl);
         meta = std::sync::Arc::new(Meta {
             index: meta.index.clone(),
             host: Some(h.into()),
@@ -148,6 +156,8 @@ pub fn run_replay(
     let now_ts = ts_of(&current_time);
     let maps = &s.rate_maps;
     let mut ctx = EventCtx::new(rng, now_ts, maps);
+    let mut locals: Vec<RxLocal> = s.tokens.iter().map(|t| RxLocal::new(&t.rx)).collect();
+    let mut host_local = s.host_token.as_ref().map(|t| RxLocal::new(&t.rx));
     let mut batch: Vec<EventOut> = Vec::new();
     let flush = |batch: &mut Vec<EventOut>, writer: &mut dyn Writer| -> anyhow::Result<()> {
         if batch.is_empty() {
@@ -172,7 +182,7 @@ pub fn run_replay(
                     while t >= horizon {
                         let rl = &lines[idx];
                         t -= chrono::Duration::microseconds((rl.diff * 1e6) as i64);
-                        events.push(render(s, rl, &t, &mut ctx));
+                        events.push(render(s, rl, &t, &mut ctx, &mut locals, &mut host_local));
                         if idx == 0 {
                             idx = lines.len() - 1;
                         } else {
@@ -215,7 +225,7 @@ pub fn run_replay(
             }
         }
         let event_time = s.now();
-        batch.push(render(s, rl, &event_time, &mut ctx));
+        batch.push(render(s, rl, &event_time, &mut ctx, &mut locals, &mut host_local));
         if batch.len() >= 512 {
             flush(&mut batch, writer)?;
         }

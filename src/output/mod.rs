@@ -44,7 +44,9 @@ pub struct OutputOptions {
 pub enum SocketConnections {
     /// One connection per worker thread (the agent accepts them concurrently).
     PerThread,
-    /// One shared connection guarded by a mutex (the Python plugin's shape).
+    /// One shared connection guarded by a mutex (the Python plugin's shape;
+    /// the default, since the agent's per-connection reader threads compete
+    /// with its HEC senders for the GIL).
     Single,
 }
 

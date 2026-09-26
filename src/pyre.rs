@@ -25,6 +25,7 @@ impl Span {
     }
 }
 
+#[derive(Clone)]
 pub enum Rx {
     Std { re: regex::Regex, groups: usize },
     Fancy { re: fancy_regex::Regex, groups: usize },
@@ -143,6 +144,54 @@ impl Rx {
             Rx::Fancy { re, .. } => re.is_match(text).unwrap_or(false),
         }
     }
+}
+
+/// A per-thread handle on a regex. `regex::Regex` shares one cache pool
+/// across threads with a lock-free fast path only for the owning thread, so
+/// every worker clones the regex (cheap) and keeps its own `CaptureLocations`
+/// to find group spans without allocating per match.
+pub struct RxLocal {
+    rx: Rx,
+    locs: Option<regex::CaptureLocations>,
+}
+
+impl RxLocal {
+    pub fn new(rx: &Rx) -> RxLocal {
+        let rx = rx.clone();
+        let locs = match &rx {
+            Rx::Std { re, groups } if *groups > 0 => Some(re.capture_locations()),
+            _ => None,
+        };
+        RxLocal { rx, locs }
+    }
+
+    pub fn rx(&self) -> &Rx {
+        &self.rx
+    }
+
+    /// All non-overlapping matches, in order (`re.finditer`).
+    pub fn find_all(&mut self, text: &str, out: &mut Vec<Span>) {
+        match (&self.rx, &mut self.locs) {
+            (Rx::Std { re, groups }, Some(locs)) if *groups > 0 => {
+                out.clear();
+                let mut start = 0;
+                while start <= text.len() {
+                    let Some(m) = re.captures_read_at(locs, text, start) else { break };
+                    out.push(Span { start: m.start(), end: m.end(), group1: locs.get(1) });
+                    start = if m.end() == m.start() { next_boundary(text, m.end()) } else { m.end() };
+                }
+            }
+            _ => self.rx.find_all(text, out),
+        }
+    }
+}
+
+fn next_boundary(text: &str, i: usize) -> usize {
+    let mut j = i + 1;
+    while j < text.len() && !text.is_char_boundary(j) {
+        j += 1;
+    }
+    j
 }
 
 /// `re.match(pattern, name)` whose match spans the whole name: how eventgen

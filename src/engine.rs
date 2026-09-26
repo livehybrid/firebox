@@ -21,6 +21,7 @@ use crate::conf::{parse_bool, Conf, StanzaConf};
 use crate::envelope::{EventOut, Meta, TimeVal};
 use crate::gen;
 use crate::output::{Output, Outputs, Writer};
+use crate::pyre::RxLocal;
 use crate::rate::{randomize_count_factor, rated_count, PerDayVolumeRater, RateMaps};
 use crate::sample::{self, SampleData, DEFAULT_BREAKER};
 use crate::strftime::Ts;
@@ -738,10 +739,26 @@ struct WorkerState {
     writers: Vec<(usize, Box<dyn Writer>)>,
     events: Vec<EventOut>,
     pool: Vec<String>,
-    ts_cache: Option<(i64, Ts)>,
+    /// Direct-mapped cache of local broken-down time per epoch second.
+    ts_cache: Box<[Option<(i64, Ts)>; 256]>,
+    /// Per-sample regex handles owned by this thread: (sample key, tokens, host token).
+    rx_local: Vec<(usize, Vec<RxLocal>, Option<RxLocal>)>,
 }
 
 impl WorkerState {
+    /// Index of this thread's regex handles for `sample`, creating them on
+    /// first use.
+    fn local_rx_index(&mut self, sample: &Arc<Sample>) -> usize {
+        let key = Arc::as_ptr(sample) as *const () as usize;
+        if let Some(i) = self.rx_local.iter().position(|(k, _, _)| *k == key) {
+            return i;
+        }
+        let toks = sample.tokens.iter().map(|t| RxLocal::new(&t.rx)).collect();
+        let host = sample.host_token.as_ref().map(|t| RxLocal::new(&t.rx));
+        self.rx_local.push((key, toks, host));
+        self.rx_local.len() - 1
+    }
+
     fn writer_for(&mut self, output: &Arc<dyn Output>) -> anyhow::Result<&mut dyn Writer> {
         let key = Arc::as_ptr(output) as *const () as usize;
         if let Some(pos) = self.writers.iter().position(|(k, _)| *k == key) {
@@ -767,7 +784,8 @@ fn worker_loop(
         writers: Vec::new(),
         events: Vec::with_capacity(CHUNK_EVENTS),
         pool: Vec::with_capacity(CHUNK_EVENTS),
-        ts_cache: None,
+        ts_cache: Box::new([None; 256]),
+        rx_local: Vec::new(),
     };
     for job in rx.iter() {
         if stop.load(Ordering::Relaxed) {
@@ -812,12 +830,14 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
     st.events.clear();
     let (et, lt) = (job.et, job.lt);
     let mut bytes = 0u64;
+    let li = st.local_rx_index(&job.sample);
     {
-        let WorkerState { rng, events, pool, ts_cache, .. } = st;
+        let WorkerState { rng, events, pool, ts_cache, rx_local, .. } = st;
+        let (_, tok_rx, host_rx) = &mut rx_local[li];
         let mut ctx = EventCtx::new(rng, job.now, &s.rate_maps);
         ctx.et = Some(et);
         ctx.lt = Some(lt);
-        let mut cache = *ts_cache;
+        let cache: &mut [Option<(i64, Ts)>; 256] = ts_cache;
         let mut emit = |line: &sample::Line, seq_i: Option<usize>, ctx: &mut EventCtx<'_>| {
             ctx.begin_event();
             let pivot_epoch: i64;
@@ -832,11 +852,12 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                 _ => {
                     pivot_epoch =
                         if lt.epoch > et.epoch { ctx.rng.random_range(et.epoch..=lt.epoch) } else { et.epoch };
-                    match cache {
-                        Some((e, ts)) if e == pivot_epoch => ts,
+                    let slot = &mut cache[(pivot_epoch & 255) as usize];
+                    match slot {
+                        Some((e, ts)) if *e == pivot_epoch => *ts,
                         _ => {
                             let ts = Ts::from_epoch(pivot_epoch, 0).unwrap_or(et);
-                            cache = Some((pivot_epoch, ts));
+                            *slot = Some((pivot_epoch, ts));
                             ts
                         }
                     }
@@ -846,8 +867,8 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
             let mut raw = pool.pop().unwrap_or_default();
             raw.clear();
             raw.push_str(&line.raw);
-            for t in &s.tokens {
-                t.replace(&mut raw, ctx);
+            for (t, l) in s.tokens.iter().zip(tok_rx.iter_mut()) {
+                t.replace_local(&mut raw, ctx, l);
             }
             let mut meta = match &line.meta {
                 Some(m) => match &batch_index {
@@ -861,9 +882,9 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                 },
                 None => batch_meta.clone(),
             };
-            if let Some(ht) = &s.host_token {
+            if let (Some(ht), Some(hl)) = (&s.host_token, host_rx.as_mut()) {
                 let mut h: String = meta.host.as_deref().unwrap_or("").to_string();
-                ht.replace(&mut h, ctx);
+                ht.replace_local(&mut h, ctx, hl);
                 meta = Arc::new(Meta {
                     index: meta.index.clone(),
                     host: Some(Arc::from(h)),
@@ -954,7 +975,6 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                 }
             }
         }
-        *ts_cache = cache;
     }
     if st.events.is_empty() {
         return Ok(());
@@ -972,8 +992,12 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
         }
         r
     };
-    st.pool.extend(events.into_iter().map(|e| e.raw));
-    st.events = Vec::with_capacity(CHUNK_EVENTS);
+    // hand the Strings back to the pool and keep the Vec's capacity
+    let mut events = events;
+    for e in events.drain(..) {
+        st.pool.push(e.raw);
+    }
+    st.events = events;
     res?;
     stats.add(count, bytes);
     Ok(())

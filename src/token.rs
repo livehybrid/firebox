@@ -4,8 +4,10 @@
 //! finds all its matches, computes ONE replacement value and writes it into
 //! every match (group 1 when the pattern has one, else the whole match), which
 //! is exactly upstream's behaviour, including "on any error leave the text
-//! alone".
+//! alone". The hot path allocates nothing: values are written into per-thread
+//! scratch buffers and the event is rebuilt in place.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
@@ -13,7 +15,7 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 
 use crate::conf::TokenSpec;
-use crate::pyre::{Rx, Span};
+use crate::pyre::{Rx, RxLocal, Span};
 use crate::rate::{py_round, RateMaps};
 use crate::strftime::{Layout, Ts};
 
@@ -110,7 +112,7 @@ pub struct FileSpec {
     pub column: usize,
     pub sequential: bool,
     pub seq_counter: AtomicUsize,
-    /// Identity for the per-event multivalue cache.
+    /// Identity for the per-event multivalue cache (one id per distinct file).
     pub file_id: usize,
 }
 
@@ -148,7 +150,10 @@ pub struct EventCtx<'a> {
     /// Multivalue-file picks made earlier in this event: (file_id, columns).
     pub mv: Vec<(usize, Vec<String>)>,
     pub spans: Vec<Span>,
+    /// The rebuilt event (swapped with the input).
     pub scratch: String,
+    /// The replacement value being computed for the current token.
+    pub value: String,
     /// The `earliest`/`latest` strings are set (they always are after
     /// layering, but upstream checks).
     pub window_declared: bool,
@@ -164,8 +169,9 @@ impl<'a> EventCtx<'a> {
             now,
             rate_maps,
             mv: Vec::new(),
-            spans: Vec::new(),
-            scratch: String::new(),
+            spans: Vec::with_capacity(8),
+            scratch: String::with_capacity(1024),
+            value: String::with_capacity(64),
             window_declared: true,
         }
     }
@@ -178,8 +184,9 @@ impl<'a> EventCtx<'a> {
 
 impl Token {
     /// Compile a spec. `cwd` resolves relative file-token paths (eventgen uses
-    /// `os.path.abspath`, i.e. the process working directory); `sample_dir`
-    /// holds integerid state files.
+    /// `os.path.abspath`, i.e. the process working directory; the pack root is
+    /// tried as a fallback so `samples/foo.sample` also works when the process
+    /// was started elsewhere); `sample_dir` holds integerid state files.
     pub fn compile(spec: &TokenSpec, cwd: &Path, sample_dir: &Path, file_id: usize) -> Result<Token, String> {
         let rx = Rx::compile(&spec.token)?;
         let kind = match spec.replacement_type.as_str() {
@@ -189,7 +196,8 @@ impl Token {
             "random" => Kind::Random(RandomSpec::parse(&spec.replacement)),
             "rated" => Kind::Rated(RandomSpec::parse(&spec.replacement)),
             "file" | "mvfile" | "seqfile" => {
-                match load_file_spec(&spec.replacement, cwd, spec.replacement_type == "seqfile", file_id) {
+                let fallback = sample_dir.parent();
+                match load_file_spec(&spec.replacement, cwd, fallback, spec.replacement_type == "seqfile", file_id) {
                     Ok(f) => Kind::File(f),
                     Err(e) => {
                         log::error!("{}", e);
@@ -236,66 +244,84 @@ impl Token {
         }
     }
 
-    /// Replace every occurrence in `event`. Returns true when the text changed.
+    /// Replace every occurrence in `event` using a temporary regex handle
+    /// (tests and one-off paths; the workers use [`Token::replace_local`]).
     pub fn replace(&self, event: &mut String, ctx: &mut EventCtx<'_>) -> bool {
-        self.rx.find_all(event, &mut ctx.spans);
+        let mut local = RxLocal::new(&self.rx);
+        self.replace_local(event, ctx, &mut local)
+    }
+
+    /// Replace every occurrence in `event`. Returns true when the text changed.
+    pub fn replace_local(&self, event: &mut String, ctx: &mut EventCtx<'_>, local: &mut RxLocal) -> bool {
+        local.find_all(event, &mut ctx.spans);
         if ctx.spans.is_empty() {
             return false;
         }
-        let (fs, fe) = ctx.spans[0].target();
-        let value: Option<String> = match &self.kind {
-            Kind::Static(s) => Some(s.clone()),
-            Kind::ReplayTimestamp(layout) => ctx.lt.map(|lt| layout.format(&lt)),
-            Kind::Timestamp(layout) => self.timestamp_value(layout, ctx),
-            Kind::Random(spec) => random_value(spec, ctx, None),
+        ctx.value.clear();
+        let ok = match &self.kind {
+            Kind::Static(s) => {
+                ctx.value.push_str(s);
+                true
+            }
+            Kind::ReplayTimestamp(layout) => match ctx.lt {
+                Some(lt) => {
+                    layout.write_str(&mut ctx.value, &lt);
+                    true
+                }
+                None => false,
+            },
+            Kind::Timestamp(layout) => self.timestamp_into(layout, ctx),
+            Kind::Random(spec) => random_into(spec, ctx, None),
             Kind::Rated(spec) => {
                 let factor = ctx.rate_maps.rated_factor(&ctx.now);
-                random_value(spec, ctx, Some(factor))
+                random_into(spec, ctx, Some(factor))
             }
-            Kind::File(f) => file_value(f, ctx),
-            Kind::IntegerId(counter) => Some(counter.fetch_add(1, Ordering::Relaxed).to_string()),
-            Kind::Broken => None,
+            Kind::File(f) => file_into(f, ctx),
+            Kind::IntegerId(counter) => {
+                let _ = write!(ctx.value, "{}", counter.fetch_add(1, Ordering::Relaxed));
+                true
+            }
+            Kind::Broken => false,
         };
-        let Some(value) = value else {
+        if !ok {
             return false; // upstream returns `old`: the text is left alone
-        };
-        if ctx.spans.len() == 1 && value == event[fs..fe] {
+        }
+        let (fs, fe) = ctx.spans[0].target();
+        if ctx.spans.len() == 1 && ctx.value == event[fs..fe] {
             return false;
         }
-        let spans = std::mem::take(&mut ctx.spans);
-        let out = &mut ctx.scratch;
-        out.clear();
+        let EventCtx { spans, scratch, value, .. } = ctx;
+        scratch.clear();
         let mut pos = 0;
-        for sp in &spans {
+        for sp in spans.iter() {
             let (s, e) = sp.target();
             if s < pos {
                 continue; // overlapping group spans cannot happen with finditer, but stay safe
             }
-            out.push_str(&event[pos..s]);
-            out.push_str(&value);
+            scratch.push_str(&event[pos..s]);
+            scratch.push_str(value);
             pos = e;
         }
-        out.push_str(&event[pos..]);
-        std::mem::swap(event, out);
-        ctx.spans = spans;
+        scratch.push_str(&event[pos..]);
+        std::mem::swap(event, scratch);
         true
     }
 
-    fn timestamp_value(&self, layout: &Layout, ctx: &mut EventCtx<'_>) -> Option<String> {
+    fn timestamp_into(&self, layout: &Layout, ctx: &mut EventCtx<'_>) -> bool {
         if !ctx.window_declared {
             log::error!("Earliest or latest specifier were not set; will not replace");
-            return None;
+            return false;
         }
         let (Some(et), Some(lt)) = (ctx.et, ctx.lt) else {
-            return None;
+            return false;
         };
         if lt.epoch < et.epoch {
             log::error!("Earliest '{}' is greater than latest '{}'; will not replace", et.epoch, lt.epoch);
-            return None;
+            return false;
         }
         if !layout.has_specifiers() {
             log::error!("Invalid strptime specifier '{}' detected; will not replace", self.spec.replacement);
-            return None;
+            return false;
         }
         // The default generator always supplies a pivot. Replay passes the
         // event time as both bounds; use it directly rather than upstream's
@@ -305,7 +331,8 @@ impl Token {
             Some(p) => p,
             None => lt,
         };
-        Some(layout.format(&ts))
+        layout.write_str(&mut ctx.value, &ts);
+        true
     }
 }
 
@@ -326,7 +353,13 @@ fn url_quote(s: &str) -> String {
     out
 }
 
-fn load_file_spec(replacement: &str, cwd: &Path, sequential: bool, file_id: usize) -> Result<FileSpec, String> {
+fn load_file_spec(
+    replacement: &str,
+    cwd: &Path,
+    fallback_root: Option<&Path>,
+    sequential: bool,
+    file_id: usize,
+) -> Result<FileSpec, String> {
     let parts: Vec<&str> = replacement.split(':').collect();
     let (path_text, column) = if parts.len() == 1 {
         (replacement.to_string(), 0usize)
@@ -336,7 +369,16 @@ fn load_file_spec(replacement: &str, cwd: &Path, sequential: bool, file_id: usiz
             _ => (replacement.to_string(), 0),
         }
     };
-    let path = path_parser(&path_text, cwd);
+    let mut path = path_parser(&path_text, cwd);
+    if !path.is_file() {
+        if let Some(root) = fallback_root {
+            let alt = path_parser(&path_text, root);
+            if alt.is_file() {
+                log::debug!("file token {} resolved against the pack root {}", path_text, root.display());
+                path = alt;
+            }
+        }
+    }
     if !path.is_file() {
         return Err(format!("File '{}' does not exist", path.display()));
     }
@@ -404,7 +446,8 @@ fn normpath(p: &Path) -> PathBuf {
     out
 }
 
-fn file_value(f: &FileSpec, ctx: &mut EventCtx<'_>) -> Option<String> {
+/// Write the file token's value into `ctx.value`.
+fn file_into(f: &FileSpec, ctx: &mut EventCtx<'_>) -> bool {
     if f.column > 0 {
         if let Some((_, cols)) = ctx.mv.iter().find(|(id, _)| *id == f.file_id) {
             if f.column > cols.len() {
@@ -413,9 +456,10 @@ fn file_value(f: &FileSpec, ctx: &mut EventCtx<'_>) -> Option<String> {
                     f.column,
                     f.path.display()
                 );
-                return None;
+                return false;
             }
-            return Some(cols[f.column - 1].clone());
+            ctx.value.push_str(&cols[f.column - 1]);
+            return true;
         }
     }
     let line = if f.sequential {
@@ -427,101 +471,100 @@ fn file_value(f: &FileSpec, ctx: &mut EventCtx<'_>) -> Option<String> {
     };
     if f.column > 0 {
         let cols: Vec<String> = line.split(',').map(str::to_string).collect();
-        let picked = if f.column > cols.len() {
+        let ok = if f.column > cols.len() {
             log::error!("Index for column '{}' in replacement file '{}' is out of bounds", f.column, f.path.display());
-            None
+            false
         } else {
-            Some(cols[f.column - 1].clone())
+            ctx.value.push_str(&cols[f.column - 1]);
+            true
         };
         ctx.mv.push((f.file_id, cols));
-        picked
+        ok
     } else {
-        Some(line.clone())
+        ctx.value.push_str(line);
+        true
     }
 }
 
-fn random_value(spec: &RandomSpec, ctx: &mut EventCtx<'_>, rate_factor: Option<f64>) -> Option<String> {
-    let rng = &mut *ctx.rng;
-    Some(match spec {
+/// Write a random/rated value into `ctx.value`.
+fn random_into(spec: &RandomSpec, ctx: &mut EventCtx<'_>, rate_factor: Option<f64>) -> bool {
+    let EventCtx { rng, value, .. } = ctx;
+    let rng: &mut SmallRng = rng;
+    match spec {
         RandomSpec::Ipv4 => {
             let o: [u8; 4] = rng.random();
-            format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
+            let _ = write!(value, "{}.{}.{}.{}", o[0], o[1], o[2], o[3]);
         }
         RandomSpec::Ipv6 => {
-            let mut s = String::with_capacity(39);
             for i in 0..8 {
                 if i > 0 {
-                    s.push(':');
+                    value.push(':');
                 }
                 let v: u16 = rng.random();
-                s.push_str(&format!("{:x}", v));
+                let _ = write!(value, "{:x}", v);
             }
-            s
         }
         RandomSpec::Mac => {
-            let mut s = String::with_capacity(17);
             for i in 0..6 {
                 if i > 0 {
-                    s.push(':');
+                    value.push(':');
                 }
                 let v: u8 = rng.random();
-                s.push_str(&format!("{:02x}", v));
+                let _ = write!(value, "{:02x}", v);
             }
-            s
         }
         RandomSpec::Guid => {
             let mut b: [u8; 16] = rng.random();
             b[6] = (b[6] & 0x0f) | 0x40;
             b[8] = (b[8] & 0x3f) | 0x80;
-            format!(
-                "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
-            )
+            for (i, byte) in b.iter().enumerate() {
+                if matches!(i, 4 | 6 | 8 | 10) {
+                    value.push('-');
+                }
+                let _ = write!(value, "{:02x}", byte);
+            }
         }
         RandomSpec::Integer(lo, hi) => {
             if hi < lo {
                 log::error!("Start integer {} greater than end integer {}; will not replace", lo, hi);
-                return None;
+                return false;
             }
             let mut v = rng.random_range(*lo..=*hi);
             if let Some(f) = rate_factor {
                 v = py_round(v as f64 * f);
             }
-            v.to_string()
+            let _ = write!(value, "{}", v);
         }
         RandomSpec::Float { lo, hi, prec } => {
             if hi < lo {
                 log::error!("Start float {} greater than end float {}; will not replace", lo, hi);
-                return None;
+                return false;
             }
             let mut v = py_round_to(rng.random_range(*lo..=*hi), *prec);
             if let Some(f) = rate_factor {
                 v = py_round_to(v * f, *prec);
             }
-            py_float_str(v)
+            value.push_str(&py_float_str(v));
         }
         RandomSpec::StringN(n) => {
-            let mut s = String::with_capacity(*n);
             for _ in 0..*n {
-                s.push(URL_SAFE[rng.random_range(0..URL_SAFE.len())] as char);
+                value.push(URL_SAFE[rng.random_range(0..URL_SAFE.len())] as char);
             }
-            s
         }
         RandomSpec::HexN(n) => {
-            let mut s = String::with_capacity(*n);
             for _ in 0..*n {
-                s.push(HEX_UPPER[rng.random_range(0..16)] as char);
+                value.push(HEX_UPPER[rng.random_range(0..16)] as char);
             }
-            s
         }
         RandomSpec::List(items) => {
             if items.is_empty() {
-                return None;
+                return false;
             }
-            items[rng.random_range(0..items.len())].clone()
+            value.push_str(&items[rng.random_range(0..items.len())]);
         }
-        RandomSpec::Invalid(_) => return None,
-    })
+        RandomSpec::Invalid(_) => return false,
+    }
+    true
 }
 
 /// Python `round(x, ndigits)`: correctly rounded on the exact binary value
@@ -604,7 +647,7 @@ mod tests {
             ("float[1.50:2.50]", |v: &str| v.contains('.') && v.split('.').nth(1).unwrap().len() <= 2),
             ("string(8)", |v: &str| v.len() == 8 && v.bytes().all(|b| URL_SAFE.contains(&b))),
             ("hex(6)", |v: &str| v.len() == 6 && v.bytes().all(|b| HEX_UPPER.contains(&b))),
-            ("guid", |v: &str| v.len() == 36 && v.as_bytes()[14] == b'4'),
+            ("guid", |v: &str| v.len() == 36 && v.as_bytes()[14] == b'4' && v.matches('-').count() == 4),
             ("ipv6", |v: &str| v.split(':').count() == 8),
             ("mac", |v: &str| v.len() == 17),
             ("list[\"a\",\"b\"]", |v: &str| v == "a" || v == "b"),
@@ -670,6 +713,15 @@ mod tests {
             outs.push(e);
         }
         assert_eq!(outs, vec!["200", "404", "200"]);
+        // pack-root fallback: cwd elsewhere, file under <sample_dir>/../samples
+        let pack = dir.join("pack");
+        std::fs::create_dir_all(pack.join("samples")).unwrap();
+        std::fs::write(pack.join("samples/codes.sample"), "7\n").unwrap();
+        let t = Token::compile(&spec("CODE", "file", "samples/codes.sample"), Path::new("/"), &pack.join("samples"), 4)
+            .unwrap();
+        let mut e = "CODE".into();
+        t.replace(&mut e, &mut c);
+        assert_eq!(e, "7");
     }
 
     #[test]

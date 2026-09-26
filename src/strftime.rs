@@ -317,6 +317,15 @@ impl Layout {
         }
     }
 
+    /// Append the formatted time to a String. Every byte a layout emits is
+    /// ASCII or a literal copied from the (UTF-8) format split at ASCII `%`,
+    /// so the buffer stays valid UTF-8.
+    pub fn write_str(&self, out: &mut String, ts: &Ts) {
+        // SAFETY: see above; only valid UTF-8 is appended.
+        let bytes = unsafe { out.as_mut_vec() };
+        self.write(bytes, ts);
+    }
+
     pub fn format(&self, ts: &Ts) -> String {
         let mut out = Vec::with_capacity(32);
         self.write(&mut out, ts);

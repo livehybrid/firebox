@@ -34,7 +34,7 @@ firebox bench path/to/default/eventgen.conf --seconds 5
 | `--duration S` | stop after S seconds |
 | `--stats S` | log throughput every S seconds |
 | `--socket PATH` / `STOKER_OUTPUT_SOCKET` | the Stoker agent socket for `outputMode = stoker` |
-| `--connections per-thread\|single` | one socket connection per thread (default) or one shared |
+| `--connections single\|per-thread` | one shared socket connection (default) or one per thread |
 | `-v`, `-vv` | info / debug logging on stderr (default: errors only) |
 
 ## What is supported

@@ -86,8 +86,10 @@ struct GenerateArgs {
     /// Path of the Stoker agent socket for outputMode = stoker.
     #[arg(long, env = "STOKER_OUTPUT_SOCKET", default_value = "/tmp/stoker-output.sock")]
     socket: String,
-    /// How workers share the Stoker socket.
-    #[arg(long, value_enum, env = "FIREBOX_SOCKET_CONNECTIONS", default_value = "per-thread")]
+    /// How workers share the Stoker socket. One shared connection is the
+    /// default: the agent reads with one thread per connection and many
+    /// readers starve its HEC senders (measured 1.9k vs 4.8k eps).
+    #[arg(long, value_enum, env = "FIREBOX_SOCKET_CONNECTIONS", default_value = "single")]
     connections: Connections,
     // Accepted for command-line compatibility with eventgen; they change nothing.
     #[arg(long, hide = true)]
