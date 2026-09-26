@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::conf::StanzaConf;
-use crate::envelope::EventOut;
+use crate::envelope::{EventOut, MetaPolicy};
 
 pub mod counter;
 pub mod devnull;
@@ -38,6 +38,17 @@ pub trait Output: Send + Sync {
 pub struct OutputOptions {
     pub socket_path: String,
     pub socket_connections: SocketConnections,
+    pub envelope: Envelope,
+}
+
+/// What the Stoker socket carries per line.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Envelope {
+    /// `{"time","host","source","sourcetype","index","event"}` with nulls: the
+    /// agent fills metadata and paces.
+    Stoker,
+    /// Final HEC objects with the agent's metadata rules already applied.
+    Hec(MetaPolicy),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +76,11 @@ impl Outputs {
                 continue;
             }
             let out: Arc<dyn Output> = match s.output_mode() {
-                "stoker" => Arc::new(stoker::StokerOutput::new(&opts.socket_path, opts.socket_connections)),
+                "stoker" => Arc::new(stoker::StokerOutput::new(
+                    &opts.socket_path,
+                    opts.socket_connections,
+                    opts.envelope.clone(),
+                )),
                 "stdout" => Arc::new(stdout::StdoutOutput::new()),
                 "devnull" => Arc::new(devnull::DevNullOutput),
                 "counter" => Arc::new(counter::CounterOutput::new()),

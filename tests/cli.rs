@@ -286,3 +286,36 @@ fn missing_socket_is_a_fatal_error() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot connect"));
 }
+
+#[test]
+fn hec_envelope_applies_overrides_and_defaults() {
+    let dir = tmpdir("hecenv");
+    let pack = fixtures().join("flatline");
+    let conf = rewrite(&pack, &dir, 20, &[]);
+    let sock = dir.join("out.sock");
+    let sink = Sink::start(sock.clone());
+    let out = Command::new(bin())
+        .args(["-v", "generate"])
+        .arg(&conf)
+        .args(["--duration", "1.2", "--envelope", "hec"])
+        .env("STOKER_OUTPUT_SOCKET", &sock)
+        .env(
+            "STOKER_ENVELOPE_META",
+            r#"{"overrides": {"index": "loadtest"}, "defaults": {"source": "ignored-engine-has-one", "host": "x"}}"#,
+        )
+        .current_dir(&pack)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let events = sink.events();
+    assert!(!events.is_empty());
+    for e in &events {
+        assert_eq!(e["index"], "loadtest"); // override beats the engine's `main`
+        assert_eq!(e["host"], "127.0.0.1"); // engine value beats the default
+        assert_eq!(e["source"], "flatline.sample");
+        assert_eq!(e["sourcetype"], "eventgen");
+        assert!(e["time"].is_i64());
+        assert!(e.get("fields").is_none());
+        assert_eq!(e.as_object().unwrap().len(), 6);
+    }
+}

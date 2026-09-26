@@ -15,7 +15,7 @@ pub enum TimeVal {
     None,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Meta {
     pub index: Option<Arc<str>>,
     pub host: Option<Arc<str>>,
@@ -116,6 +116,82 @@ pub fn write_stoker_line(out: &mut Vec<u8>, ev: &EventOut) {
     out.extend_from_slice(b"}\n");
 }
 
+/// How the Stoker agent fills envelope metadata: a run-declared override
+/// wins over the engine's value; a null engine value takes the slice default;
+/// a value that is still null is omitted. With `--envelope hec` firebox
+/// applies this itself and emits final HEC objects, so the agent's reader only
+/// paces and forwards bytes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MetaPolicy {
+    pub overrides: Meta,
+    pub defaults: Meta,
+}
+
+impl MetaPolicy {
+    /// Parse `{"overrides": {"index": ..}, "defaults": {..}}`; null and missing
+    /// keys are "unset".
+    pub fn parse(json: &str) -> anyhow::Result<MetaPolicy> {
+        let v: serde_json::Value = serde_json::from_str(json)?;
+        let pick = |section: &str| -> Meta {
+            let obj = v.get(section).and_then(|s| s.as_object());
+            let get =
+                |k: &str| -> Option<Arc<str>> { obj.and_then(|o| o.get(k)).and_then(|x| x.as_str()).map(Arc::from) };
+            Meta { index: get("index"), host: get("host"), source: get("source"), sourcetype: get("sourcetype") }
+        };
+        Ok(MetaPolicy { overrides: pick("overrides"), defaults: pick("defaults") })
+    }
+
+    #[inline]
+    fn resolve<'a>(
+        over: &'a Option<Arc<str>>,
+        engine: &'a Option<Arc<str>>,
+        default: &'a Option<Arc<str>>,
+    ) -> Option<&'a Arc<str>> {
+        over.as_ref().or(engine.as_ref()).or(default.as_ref())
+    }
+}
+
+/// One HEC event object with the agent's metadata rules applied, newline
+/// terminated. `time` is omitted only when the engine set none (Splunk then
+/// stamps receipt time, which is what the agent's "now" fill approximates).
+pub fn write_hec_line_resolved(out: &mut Vec<u8>, ev: &EventOut, policy: &MetaPolicy) {
+    out.push(b'{');
+    let mut first = true;
+    let mut sep = |out: &mut Vec<u8>| {
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+    };
+    if !matches!(ev.time, TimeVal::None) {
+        sep(out);
+        out.extend_from_slice(b"\"time\":");
+        write_time(out, ev.time);
+    }
+    let fields: [(&str, Option<&Arc<str>>); 4] = [
+        ("host", MetaPolicy::resolve(&policy.overrides.host, &ev.meta.host, &policy.defaults.host)),
+        ("source", MetaPolicy::resolve(&policy.overrides.source, &ev.meta.source, &policy.defaults.source)),
+        (
+            "sourcetype",
+            MetaPolicy::resolve(&policy.overrides.sourcetype, &ev.meta.sourcetype, &policy.defaults.sourcetype),
+        ),
+        ("index", MetaPolicy::resolve(&policy.overrides.index, &ev.meta.index, &policy.defaults.index)),
+    ];
+    for (key, val) in fields {
+        if let Some(v) = val {
+            sep(out);
+            out.push(b'"');
+            out.extend_from_slice(key.as_bytes());
+            out.extend_from_slice(b"\":");
+            write_json_str(out, v);
+        }
+    }
+    sep(out);
+    out.extend_from_slice(b"\"event\":");
+    write_json_str(out, &ev.raw);
+    out.extend_from_slice(b"}\n");
+}
+
 /// One HEC event object (no trailing newline): null metadata omitted so Splunk
 /// applies the token's defaults.
 pub fn write_hec_object(out: &mut Vec<u8>, ev: &EventOut) {
@@ -183,6 +259,31 @@ mod tests {
         write_hec_object(&mut out, &ev("héllo \u{1}"));
         let s = String::from_utf8(out).unwrap();
         assert_eq!(s, "{\"time\":1700000000,\"source\":\"s\",\"index\":\"main\",\"event\":\"héllo \\u0001\"}");
+    }
+
+    #[test]
+    fn resolved_hec_line_applies_policy() {
+        let policy = MetaPolicy::parse(
+            r#"{"overrides": {"index": "loadtest", "host": null}, "defaults": {"sourcetype": "st_default", "host": "h_default"}}"#,
+        )
+        .unwrap();
+        let mut e = ev("x");
+        e.meta = Arc::new(Meta { index: Some("main".into()), host: None, source: Some("s".into()), sourcetype: None });
+        let mut out = Vec::new();
+        write_hec_line_resolved(&mut out, &e, &policy);
+        let s = String::from_utf8(out).unwrap();
+        // override beats the engine's index, defaults fill nulls, engine values otherwise
+        assert_eq!(
+            s,
+            "{\"time\":1700000000,\"host\":\"h_default\",\"source\":\"s\",\"sourcetype\":\"st_default\",\"index\":\"loadtest\",\"event\":\"x\"}\n"
+        );
+        let none = MetaPolicy::default();
+        let mut out = Vec::new();
+        write_hec_line_resolved(&mut out, &e, &none);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "{\"time\":1700000000,\"source\":\"s\",\"index\":\"main\",\"event\":\"x\"}\n"
+        );
     }
 
     #[test]

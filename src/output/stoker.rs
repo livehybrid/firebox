@@ -9,18 +9,19 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::{Output, SocketConnections, Writer};
-use crate::envelope::{write_stoker_line, EventOut};
+use super::{Envelope, Output, SocketConnections, Writer};
+use crate::envelope::{write_hec_line_resolved, write_stoker_line, EventOut};
 
 pub struct StokerOutput {
     path: String,
     mode: SocketConnections,
+    envelope: Envelope,
     shared: Arc<Mutex<Option<UnixStream>>>,
 }
 
 impl StokerOutput {
-    pub fn new(path: &str, mode: SocketConnections) -> StokerOutput {
-        StokerOutput { path: path.to_string(), mode, shared: Arc::new(Mutex::new(None)) }
+    pub fn new(path: &str, mode: SocketConnections, envelope: Envelope) -> StokerOutput {
+        StokerOutput { path: path.to_string(), mode, envelope, shared: Arc::new(Mutex::new(None)) }
     }
 
     fn connect(&self) -> anyhow::Result<UnixStream> {
@@ -36,9 +37,11 @@ impl Output for StokerOutput {
 
     fn open_writer(&self, _worker: usize) -> anyhow::Result<Box<dyn Writer>> {
         match self.mode {
-            SocketConnections::PerThread => {
-                Ok(Box::new(StokerWriter { stream: Stream::Own(self.connect()?), buf: Vec::with_capacity(256 * 1024) }))
-            }
+            SocketConnections::PerThread => Ok(Box::new(StokerWriter {
+                stream: Stream::Own(self.connect()?),
+                buf: Vec::with_capacity(256 * 1024),
+                envelope: self.envelope.clone(),
+            })),
             SocketConnections::Single => {
                 let mut guard = self.shared.lock();
                 if guard.is_none() {
@@ -47,6 +50,7 @@ impl Output for StokerOutput {
                 Ok(Box::new(StokerWriter {
                     stream: Stream::Shared(self.shared.clone()),
                     buf: Vec::with_capacity(256 * 1024),
+                    envelope: self.envelope.clone(),
                 }))
             }
         }
@@ -61,13 +65,23 @@ enum Stream {
 pub struct StokerWriter {
     stream: Stream,
     buf: Vec<u8>,
+    envelope: Envelope,
 }
 
 impl Writer for StokerWriter {
     fn write_batch(&mut self, events: &[EventOut]) -> anyhow::Result<()> {
         self.buf.clear();
-        for e in events {
-            write_stoker_line(&mut self.buf, e);
+        match &self.envelope {
+            Envelope::Stoker => {
+                for e in events {
+                    write_stoker_line(&mut self.buf, e);
+                }
+            }
+            Envelope::Hec(policy) => {
+                for e in events {
+                    write_hec_line_resolved(&mut self.buf, e, policy);
+                }
+            }
         }
         if self.buf.is_empty() {
             return Ok(());

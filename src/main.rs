@@ -7,7 +7,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use firebox::conf::{self, LoadOptions};
 use firebox::engine::{Engine, EngineOptions};
-use firebox::output::{OutputOptions, Outputs, SocketConnections};
+use firebox::envelope::MetaPolicy;
+use firebox::output::{Envelope, OutputOptions, Outputs, SocketConnections};
 
 /// A fast, multi-threaded, eventgen.conf-compatible event generator.
 #[derive(Parser, Debug)]
@@ -37,6 +38,14 @@ enum Command {
 enum Connections {
     PerThread,
     Single,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum EnvelopeKind {
+    /// Nulls for unset metadata; the agent fills and paces (the classic plugin).
+    Stoker,
+    /// Final HEC objects; the agent only paces and forwards.
+    Hec,
 }
 
 #[derive(Args, Debug)]
@@ -86,6 +95,13 @@ struct GenerateArgs {
     /// Path of the Stoker agent socket for outputMode = stoker.
     #[arg(long, env = "STOKER_OUTPUT_SOCKET", default_value = "/tmp/stoker-output.sock")]
     socket: String,
+    /// What each line on the Stoker socket carries.
+    #[arg(long, value_enum, env = "STOKER_ENVELOPE", default_value = "stoker")]
+    envelope: EnvelopeKind,
+    /// Metadata policy for `--envelope hec`: JSON
+    /// `{"overrides": {..}, "defaults": {..}}` with index/host/source/sourcetype.
+    #[arg(long, env = "STOKER_ENVELOPE_META")]
+    envelope_meta: Option<String>,
     /// How workers share the Stoker socket. One shared connection is the
     /// default: the agent reads with one thread per connection and many
     /// readers starve its HEC senders (measured 1.9k vs 4.8k eps).
@@ -187,12 +203,29 @@ fn run_generate(a: GenerateArgs) -> i32 {
             return 2;
         }
     };
+    let envelope = match a.envelope {
+        EnvelopeKind::Stoker => Envelope::Stoker,
+        EnvelopeKind::Hec => {
+            let policy = match &a.envelope_meta {
+                Some(json) => match MetaPolicy::parse(json) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("firebox: --envelope-meta is not valid: {}", e);
+                        return 2;
+                    }
+                },
+                None => MetaPolicy::default(),
+            };
+            Envelope::Hec(policy)
+        }
+    };
     let out_opts = OutputOptions {
         socket_path: a.socket.clone(),
         socket_connections: match a.connections {
             Connections::PerThread => SocketConnections::PerThread,
             Connections::Single => SocketConnections::Single,
         },
+        envelope,
     };
     let outputs = match Outputs::build(&conf.samples, &out_opts) {
         Ok(o) => o,
@@ -346,7 +379,11 @@ fn run_bench(a: BenchArgs) -> i32 {
     };
     let outputs = match Outputs::build(
         &conf.samples,
-        &OutputOptions { socket_path: String::new(), socket_connections: SocketConnections::PerThread },
+        &OutputOptions {
+            socket_path: String::new(),
+            socket_connections: SocketConnections::PerThread,
+            envelope: Envelope::Stoker,
+        },
     ) {
         Ok(o) => o,
         Err(e) => {
