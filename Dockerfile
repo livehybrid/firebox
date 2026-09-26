@@ -7,12 +7,13 @@
 #
 # The same stage is what Stoker's worker image uses to embed the binary.
 
+# The default feature set is pure Rust (plain-HTTP HEC), so no C cross
+# toolchain is needed: the musl targets link with rustc's bundled rust-lld.
+# `--build-arg FEATURES=tls` adds HTTPS via ring and then needs a C compiler
+# with musl headers for the target (CI uses zig cc for arm64).
 FROM --platform=$BUILDPLATFORM rust:1-bookworm AS builder
 ARG TARGETPLATFORM
-ARG FEATURES=tls
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        musl-tools gcc-aarch64-linux-gnu \
-    && rm -rf /var/lib/apt/lists/*
+ARG FEATURES=http
 RUN case "$TARGETPLATFORM" in \
       linux/arm64) echo aarch64-unknown-linux-musl > /rust-target ;; \
       *)           echo x86_64-unknown-linux-musl  > /rust-target ;; \
@@ -22,13 +23,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
 COPY src ./src
-# ring (behind the `tls` feature) compiles C for the target with these.
-ENV CC_x86_64_unknown_linux_musl=musl-gcc \
-    CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
-    AR_aarch64_unknown_linux_musl=aarch64-linux-gnu-ar
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,id=firebox-target-$TARGETPLATFORM \
-    cargo build --release --target "$(cat /rust-target)" --features "$FEATURES" \
+    cargo build --release --locked --target "$(cat /rust-target)" --no-default-features --features "$FEATURES" \
     && mkdir -p /out && cp "target/$(cat /rust-target)/release/firebox" /out/firebox
 
 FROM scratch

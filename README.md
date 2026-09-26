@@ -100,8 +100,10 @@ amd64 and arm64 binaries, publishes a multi-arch `scratch` image to
 `ghcr.io/livehybrid/firebox` (cosign-signed) and attaches tarballs to tagged
 releases.
 
-`Dockerfile` builds from source for any platform buildx asks for; it is the
-same stage Stoker's worker image uses to embed the binary.
+`Dockerfile` builds from source for any platform buildx asks for (pure Rust
+by default; `--build-arg FEATURES=tls` needs a C compiler with musl headers
+for the target, which CI provides with zig); it is the same stage Stoker's
+worker image uses to embed the binary.
 
 ## Tests
 

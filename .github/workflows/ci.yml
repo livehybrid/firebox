@@ -43,10 +43,8 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             arch: amd64
-            cc: musl-gcc
           - target: aarch64-unknown-linux-musl
             arch: arm64
-            cc: aarch64-linux-gnu-gcc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -55,13 +53,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: Cross toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools gcc-aarch64-linux-gnu
+      # Only ring (the `tls` feature) has C to compile. musl-gcc covers the
+      # native target; for arm64 the C is built with zig's bundled musl headers
+      # (Ubuntu's aarch64-linux-gnu-gcc has no arm64 libc headers on the
+      # runner and falls back to the host's /usr/include). The link itself is
+      # rustc's bundled rust-lld either way (see .cargo/config.toml).
+      - name: musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: mlugg/setup-zig@v2
+        if: matrix.arch == 'arm64'
+        with:
+          version: 0.14.1
+      - name: zig cc as the arm64 C compiler
+        if: matrix.arch == 'arm64'
+        run: |
+          mkdir -p "$HOME/zigcc"
+          printf '#!/bin/sh\nexec zig cc -target aarch64-linux-musl "$@"\n' > "$HOME/zigcc/aarch64-musl-cc"
+          printf '#!/bin/sh\nexec zig ar "$@"\n' > "$HOME/zigcc/zig-ar"
+          chmod +x "$HOME/zigcc/aarch64-musl-cc" "$HOME/zigcc/zig-ar"
+          echo "CC_aarch64_unknown_linux_musl=$HOME/zigcc/aarch64-musl-cc" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_musl=$HOME/zigcc/zig-ar" >> "$GITHUB_ENV"
       - name: Build (static musl, with TLS)
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
-          AR_aarch64_unknown_linux_musl: aarch64-linux-gnu-ar
         run: cargo build --release --target ${{ matrix.target }} --features tls
       - name: Smoke the binary (amd64 only)
         if: matrix.arch == 'amd64'
