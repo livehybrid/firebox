@@ -75,8 +75,7 @@ def run_python_eventgen(conf: Path, sock: str, cwd: Path, seconds=9.0):
     """The Python engine needs ~4 s to import and spin up its thread pools
     before the first interval fires, hence the longer window."""
     env = dict(os.environ, STOKER_OUTPUT_SOCKET=sock, PYTHONPATH=EVENTGEN_ROOT)
-    env["EVENTGEN_LOG_DIR"] = str(cwd / "eventgen-logs")
-    os.makedirs(env["EVENTGEN_LOG_DIR"], exist_ok=True)
+    env["EVENTGEN_LOG_DIR"] = tempfile.mkdtemp(prefix="eventgen-logs-")
     proc = subprocess.Popen(
         [sys.executable, "-m", "splunk_eventgen", "generate", str(conf)],
         cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

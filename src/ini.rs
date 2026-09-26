@@ -98,7 +98,7 @@ impl Ini {
     /// Serialise in the same shape `RawConfigParser.write` produces
     /// (`key = value`, blank line between sections, multi-line values
     /// indented with a tab).
-    pub fn to_string(&self) -> String {
+    pub fn render(&self) -> String {
         let mut out = String::new();
         let mut write_section = |name: &str, items: &[(String, String)]| {
             out.push('[');
@@ -265,6 +265,6 @@ mod tests {
     fn roundtrip_write() {
         let text = "[s]\na = 1\nb = x\n";
         let ini = parse_str(text).unwrap();
-        assert_eq!(ini.to_string(), "[s]\na = 1\nb = x\n\n");
+        assert_eq!(ini.render(), "[s]\na = 1\nb = x\n\n");
     }
 }

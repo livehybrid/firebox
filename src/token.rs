@@ -598,7 +598,8 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(3);
         let maps = RateMaps::default();
         let mut c = ctx(&mut rng, &maps);
-        let cases: [(&str, fn(&str) -> bool); 8] = [
+        type Check = fn(&str) -> bool;
+        let cases: [(&str, Check); 8] = [
             ("integer[10:20]", |v: &str| (10..=20).contains(&v.parse::<i64>().unwrap())),
             ("float[1.50:2.50]", |v: &str| v.contains('.') && v.split('.').nth(1).unwrap().len() <= 2),
             ("string(8)", |v: &str| v.len() == 8 && v.bytes().all(|b| URL_SAFE.contains(&b))),
@@ -687,7 +688,7 @@ mod tests {
     #[test]
     fn python_float_formatting() {
         assert_eq!(py_float_str(42.0), "42.0");
-        assert_eq!(py_float_str(3.14), "3.14");
+        assert_eq!(py_float_str(3.25), "3.25");
         assert_eq!(py_round_to(2.675, 2), 2.67); // binary repr rounds down, like Python
         assert_eq!(py_float_str(py_round_to(1.5, 0)), "2.0");
         assert_eq!(url_quote(r"\d+ x"), "%5Cd%2B%20x");
