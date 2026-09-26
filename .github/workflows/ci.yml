@@ -126,6 +126,8 @@ jobs:
       - name: Layout binaries per arch
         run: |
           ls -R dist
+          # upload/download-artifact do not preserve file modes
+          chmod 755 dist/amd64/firebox dist/arm64/firebox
           test -x dist/amd64/firebox && test -x dist/arm64/firebox
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -147,7 +149,7 @@ jobs:
           cat > Dockerfile.prebuilt <<'EOF'
           FROM scratch
           ARG TARGETARCH
-          COPY dist/${TARGETARCH}/firebox /firebox
+          COPY --chmod=755 dist/${TARGETARCH}/firebox /firebox
           ENTRYPOINT ["/firebox"]
           EOF
       - uses: docker/build-push-action@v6
