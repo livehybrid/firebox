@@ -68,7 +68,19 @@ jobs:
         if: matrix.arch == 'arm64'
         run: |
           mkdir -p "$HOME/zigcc"
-          printf '#!/bin/sh\nexec zig cc -target aarch64-linux-musl "$@"\n' > "$HOME/zigcc/aarch64-musl-cc"
+          # cc-rs sees a clang and appends --target=<rust triple>, which zig
+          # cannot parse; drop it and give zig its own -target instead.
+          cat > "$HOME/zigcc/aarch64-musl-cc" <<'WRAP'
+          #!/bin/bash
+          args=()
+          for a in "$@"; do
+            case "$a" in
+              --target=*) ;;
+              *) args+=("$a") ;;
+            esac
+          done
+          exec zig cc -target aarch64-linux-musl "${args[@]}"
+          WRAP
           printf '#!/bin/sh\nexec zig ar "$@"\n' > "$HOME/zigcc/zig-ar"
           chmod +x "$HOME/zigcc/aarch64-musl-cc" "$HOME/zigcc/zig-ar"
           echo "CC_aarch64_unknown_linux_musl=$HOME/zigcc/aarch64-musl-cc" >> "$GITHUB_ENV"
