@@ -59,12 +59,28 @@ envelope, paces it through the token bucket and re-serialises it for HEC. The
 Python engine never reaches the target at all: at 2,000 eps it manages a third,
 and at 10,000 eps it cannot template its first interval's batch within 20 s.
 
-Stoker's per-worker ceiling setting (`STOKER_MAX_EPS_PER_WORKER`, default
-5,000) therefore now reflects a real limit of the agent rather than of the
-engine. The next step, if higher per-worker rates are wanted, is on the agent
-side: have Firebox emit final HEC lines (metadata already applied) so the
-reader only counts, paces and forwards bytes. That is a contract extension,
-not an engine change.
+## With the HEC-line envelope (`--envelope hec`)
+
+The agent's per-event work was the wall above, so Firebox gained an envelope
+mode in which it applies the agent's metadata rules itself and emits final
+HEC objects; the agent's reader then only paces each line and forwards the
+bytes (Stoker's `STOKER_FAST_ENVELOPE`, on by default with Firebox). Same
+harness, same pack:
+
+| engine | target eps | delivered eps | achieved | agent+engine CPU (cores) |
+|---|---|---|---|---|
+| firebox, hec envelope | 5,000 | 4,998 | 100% | 0.83 |
+| firebox, hec envelope | 10,000 | 10,000 | 100% | 1.07 |
+| firebox, hec envelope | 20,000 | 11,895 | 59% | 1.02 |
+| firebox, hec envelope | 50,000 | 15,343 | 31% | 1.28 |
+| firebox, hec envelope | 100,000 | 11,060 | 11% | 1.01 |
+
+Exact delivery now holds to 10,000 eps per worker and the ceiling sits around
+15,000, three times the classic envelope and over twenty times the Python
+engine's 690. What remains is the Python agent's per-line pacing and queue
+work (about 65 microseconds per event on one core) and its HEC senders; going
+further means batching the token bucket and the queue hand-off inside the
+agent, not anything in the engine.
 
 ## Socket connections
 
