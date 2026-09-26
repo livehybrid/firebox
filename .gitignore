@@ -2,6 +2,7 @@
 /dist
 *.log
 !fixtures/**/*.log
+eventgen-logs/
 /.tmp
 __pycache__/
 .pytest_cache/
