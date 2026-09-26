@@ -1,0 +1,6 @@
+BEGIN 00:00:01 first
+  detail line a
+  detail line b code=000
+BEGIN 00:00:02 second
+  detail line c code=000
+BEGIN 00:00:03 third code=000
