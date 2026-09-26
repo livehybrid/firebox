@@ -1,0 +1,14 @@
+# Stoker pack: shaped API gateway access log (design doc appendix B).
+# Diurnal hourOfDayRate, randomised per-interval counts and token
+# replacement for timestamps, client IPs and status codes.
+# NOTE: the worker parses this with a flat two-level scalar subset of YAML;
+# keep every value on a single line.
+name: api-gateway
+tags: web, access, api, gateway, diurnal
+engine: eventgen
+description: "API gateway access log with a realistic diurnal curve: randomizeCount jitter, a 24-key hourOfDayRate map and file-based status code replacement with a weighted mix"
+estimates:
+  bytes_per_event: 380
+defaults:
+  index: main
+  sourcetype: stoker:apigw

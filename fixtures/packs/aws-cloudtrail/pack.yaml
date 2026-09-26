@@ -1,0 +1,20 @@
+# Stoker pack: AWS CloudTrail (sourcetype aws:cloudtrail). One compact JSON
+# record per line, matching the Splunk Add-on for AWS shape: userIdentity,
+# eventSource/eventName, requestParameters/responseElements, sourceIPAddress,
+# awsRegion and recipientAccountId. A realistic weighted mix - S3 data events
+# (GetObject/PutObject/DeleteObject/HeadObject/ListObjects) dominate, alongside
+# management events (ConsoleLogin, AssumeRole, RunInstances, DescribeInstances,
+# CreateBucket, PutBucketPolicy, KMS Decrypt/GenerateDataKey). Tokens re-stamp
+# eventTime to now, randomise sourceIPAddress and give each record a fresh
+# eventID UUID.
+# NOTE: the worker parses this with a flat two-level scalar subset of YAML;
+# keep every value on a single line.
+name: aws-cloudtrail
+tags: aws, cloud, cloudtrail, s3, security, audit, json
+engine: eventgen
+description: "AWS CloudTrail JSON (aws:cloudtrail): S3 data events (GetObject/PutObject/DeleteObject/HeadObject/ListObjects) plus management events (ConsoleLogin, AssumeRole, RunInstances, DescribeInstances, CreateBucket, PutBucketPolicy, KMS) with correlated userIdentity/requestParameters/readOnly/eventCategory; tokens re-stamp eventTime, randomise sourceIPAddress and mint a fresh eventID per record"
+estimates:
+  bytes_per_event: 1280
+defaults:
+  index: main
+  sourcetype: aws:cloudtrail

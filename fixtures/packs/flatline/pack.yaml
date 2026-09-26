@@ -1,0 +1,14 @@
+# Stoker pack: constant-rate baseline used by the Phase 0 exit test.
+# One stanza, fixed count, no randomisation, no rate shaping: the indexed
+# event count must track the requested rate exactly.
+# NOTE: the worker parses this with a flat two-level scalar subset of YAML;
+# keep every value on a single line.
+name: flatline
+tags: baseline, web, test, exact-rate
+engine: eventgen
+description: "Steady single-line web service log at a constant rate; no randomizeCount and no rate maps, so received EPS is a direct measure of pacing accuracy"
+estimates:
+  bytes_per_event: 120
+defaults:
+  index: main
+  sourcetype: stoker:flatline

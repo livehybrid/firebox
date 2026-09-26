@@ -1,0 +1,16 @@
+# Stoker pack: generic website access log in NCSA "combined" format.
+# The Splunk-native access_combined sourcetype: leading client IP, a
+# [dd/Mon/yyyy:HH:MM:SS +0000] timestamp, request line, status, bytes, referer
+# and user agent. Diurnal hourOfDayRate, randomised per-interval counts and
+# token replacement for the timestamp, client IP and a weighted status mix.
+# NOTE: the worker parses this with a flat two-level scalar subset of YAML;
+# keep every value on a single line.
+name: web-access
+tags: web, access, nginx, apache, access_combined
+engine: eventgen
+description: "Generic website access log (NCSA combined format, access_combined) with a realistic diurnal curve: browsers, mobiles, API clients, search bots and scanner probes across static assets, app pages and API paths, with randomizeCount jitter, a 24-key hourOfDayRate map and file-based weighted status codes"
+estimates:
+  bytes_per_event: 190
+defaults:
+  index: main
+  sourcetype: access_combined

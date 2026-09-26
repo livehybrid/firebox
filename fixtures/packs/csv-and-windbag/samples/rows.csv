@@ -1,0 +1,4 @@
+_raw,host,sourcetype
+"TS=2020-01-01 00:00:00 USER=alice CITY=nowhere SEQ=0 TAG=x msg=""quoted, comma""",web-1,csvtype
+TS=2020-01-01 00:00:01 USER=bob CITY=nowhere SEQ=0 TAG=x msg=plain,web-2,csvtype
+TS=2020-01-01 00:00:02 USER=carol CITY=nowhere SEQ=0 TAG=x msg=third,,csvtype

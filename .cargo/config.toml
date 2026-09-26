@@ -1,0 +1,12 @@
+# Static musl binaries by default. The musl targets link with rustc's bundled
+# rust-lld and self-contained crt objects, so a host without a system C
+# toolchain (no `cc`) can still build the pure-Rust feature set. Crates with C
+# code (the `tls` feature's ring) still need a C compiler for the target; CI
+# installs one.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]

@@ -1,0 +1,21 @@
+# Stoker pack: a synthetic reproduction of the Splunk Search Tutorial's
+# secure.log (sourcetype linux_secure). Linux sshd authentication events in the
+# tutorial's "%a %b %d %Y %H:%M:%S host sshd[pid]: <message>" form, brute-force
+# heavy (Failed password / invalid user dominate, Accepted password rarer), each
+# carrying a source IP. Reads like the tutorial's secure data and lands under the
+# same field extractions.
+#
+# Authored synthetic data, not Splunk's copyrighted tutorialdata.zip. If you need
+# the exact tutorial bytes for a demo, add them privately as a local rawreplay
+# `dataset:` pack.
+# NOTE: the worker parses this with a flat two-level scalar subset of YAML;
+# keep every value on a single line.
+name: splunk-tutorial-secure
+tags: splunk, tutorial, security, linux, sshd, auth
+engine: eventgen
+description: "Splunk Search Tutorial-style secure.log (linux_secure): Linux sshd authentication events - Failed/Accepted password, invalid user, brute-force heavy - in the tutorial's weekday/month/day/year timestamp form; tokens re-stamp the timestamp, randomise the source IP and the sshd pid. Synthetic reproduction of the tutorial format, not Splunk's copyrighted files"
+estimates:
+  bytes_per_event: 110
+defaults:
+  index: main
+  sourcetype: linux_secure

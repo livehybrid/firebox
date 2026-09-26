@@ -1,0 +1,49 @@
+[package]
+name = "firebox"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A fast, multi-threaded, eventgen.conf-compatible event generator (a drop-in for `splunk_eventgen generate`)"
+license = "Apache-2.0"
+repository = "https://github.com/livehybrid/firebox"
+publish = false
+
+[[bin]]
+name = "firebox"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+crossbeam-channel = "0.5"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+fancy-regex = "0.14"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+log = "0.4"
+memchr = "2"
+parking_lot = "0.12"
+rand = { version = "0.9", features = ["small_rng"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+ureq = { version = "3", default-features = false, optional = true }
+
+[features]
+# `http` enables the httpevent (Splunk HEC) output over plain HTTP.
+# `tls` adds HTTPS to it via rustls (pulls a C toolchain in for ring; the
+# release CI builds with it, a sandbox without cc builds without it).
+default = ["http"]
+http = ["dep:ureq"]
+tls = ["http", "ureq/rustls"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+inherits = "release"

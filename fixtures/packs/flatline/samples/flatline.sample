@@ -1,0 +1,20 @@
+2026-07-10T12:00:00.000Z host=web1 svc=checkout level=INFO msg="request completed" status=200 bytes=5312 dur_ms=48 trace=a1b2c3
+2026-07-10T12:00:01.000Z host=web2 svc=checkout level=INFO msg="request completed" status=200 bytes=4820 dur_ms=61 trace=b2c3d4
+2026-07-10T12:00:02.000Z host=web1 svc=catalog level=INFO msg="request completed" status=200 bytes=12480 dur_ms=35 trace=c3d4e5
+2026-07-10T12:00:03.000Z host=web3 svc=catalog level=INFO msg="cache hit served" status=304 bytes=0 dur_ms=12 trace=d4e5f6
+2026-07-10T12:00:04.000Z host=web2 svc=basket level=INFO msg="request completed" status=200 bytes=2210 dur_ms=27 trace=e5f6a7
+2026-07-10T12:00:05.000Z host=web1 svc=auth level=INFO msg="session issued ok" status=201 bytes=684 dur_ms=88 trace=f6a7b8
+2026-07-10T12:00:06.000Z host=web3 svc=checkout level=WARN msg="slow upstream call" status=200 bytes=5104 dur_ms=412 trace=a7b8c9
+2026-07-10T12:00:07.000Z host=web2 svc=catalog level=INFO msg="request completed" status=200 bytes=9932 dur_ms=41 trace=b8c9d0
+2026-07-10T12:00:08.000Z host=web1 svc=basket level=INFO msg="request completed" status=200 bytes=1873 dur_ms=19 trace=c9d0e1
+2026-07-10T12:00:09.000Z host=web3 svc=auth level=ERROR msg="token has expired" status=401 bytes=231 dur_ms=9 trace=d0e1f2
+2026-07-10T12:00:10.000Z host=web2 svc=checkout level=INFO msg="request completed" status=200 bytes=5511 dur_ms=52 trace=e1f2a3
+2026-07-10T12:00:11.000Z host=web1 svc=catalog level=INFO msg="request completed" status=200 bytes=11205 dur_ms=38 trace=f2a3b4
+2026-07-10T12:00:12.000Z host=web3 svc=basket level=INFO msg="request completed" status=200 bytes=2450 dur_ms=24 trace=a3b4c5
+2026-07-10T12:00:13.000Z host=web2 svc=auth level=INFO msg="session issued ok" status=201 bytes=690 dur_ms=79 trace=b4c5d6
+2026-07-10T12:00:14.000Z host=web1 svc=checkout level=WARN msg="retrying payment" status=502 bytes=512 dur_ms=903 trace=c5d6e7
+2026-07-10T12:00:15.000Z host=web3 svc=catalog level=INFO msg="request completed" status=200 bytes=8744 dur_ms=44 trace=d6e7f8
+2026-07-10T12:00:16.000Z host=web2 svc=basket level=INFO msg="item added to bag" status=200 bytes=1204 dur_ms=22 trace=e7f8a9
+2026-07-10T12:00:17.000Z host=web1 svc=auth level=INFO msg="session renewed" status=200 bytes=655 dur_ms=31 trace=f8a9b0
+2026-07-10T12:00:18.000Z host=web3 svc=checkout level=INFO msg="request completed" status=200 bytes=5093 dur_ms=57 trace=a9b0c1
+2026-07-10T12:00:19.000Z host=web2 svc=catalog level=INFO msg="request completed" status=200 bytes=10318 dur_ms=46 trace=b0c1d2

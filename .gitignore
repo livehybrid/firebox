@@ -1,0 +1,7 @@
+/target
+/dist
+*.log
+/.tmp
+__pycache__/
+.pytest_cache/
+/fixtures/packs/*/state.*

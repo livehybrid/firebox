@@ -1,0 +1,10 @@
+name: nginx-access
+description: "Realistic nginx combined access logs (weighted status codes, varied paths and user agents)"
+tags: [web, access, nginx]
+engines: [eventgen]
+defaults:
+  index: main
+  sourcetype: "nginx:plus:access"
+estimates:
+  bytes_per_event: 210
+  per_day_gb: 5
