@@ -96,7 +96,8 @@ pub fn load_raw(path: &Path, breaker: &str) -> anyhow::Result<SampleData> {
     let pieces: Vec<String> = if breaker == DEFAULT_BREAKER {
         split_lines_keep_newline(&text)
     } else {
-        match Rx::compile(breaker) {
+        // eventgen compiles the breaker with re.M: `^` and `$` are per line.
+        match Rx::compile(&format!("(?m){}", breaker)) {
             Ok(rx) => split_by_breaker(&text, &rx),
             Err(e) => {
                 log::error!(
@@ -317,6 +318,14 @@ mod tests {
         let d = load_raw(&p, r"\d{4}-\d{2}-\d{2}").unwrap();
         let raws: Vec<&str> = d.lines.iter().map(|l| l.raw.as_str()).collect();
         assert_eq!(raws, vec!["2026-01-01 a\n  cont", "2026-01-02 b"]);
+    }
+
+    #[test]
+    fn anchored_breaker_is_multiline() {
+        let p = tmpfile("m.sample", b"2026-01-01 a\n  at x\n  at y\n2026-01-02 b\n<Event>\n</Event>\n");
+        let d = load_raw(&p, r"^(?:\d{4}-\d{2}-\d{2}|<Event)").unwrap();
+        let raws: Vec<&str> = d.lines.iter().map(|l| l.raw.as_str()).collect();
+        assert_eq!(raws, vec!["2026-01-01 a\n  at x\n  at y", "2026-01-02 b", "<Event>\n</Event>"]);
     }
 
     #[test]
