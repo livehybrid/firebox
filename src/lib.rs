@@ -15,6 +15,7 @@ pub mod ini;
 pub mod output;
 pub mod pyre;
 pub mod rate;
+pub mod rotate;
 pub mod sample;
 pub mod strftime;
 pub mod strptime;
