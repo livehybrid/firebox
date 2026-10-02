@@ -319,3 +319,200 @@ fn hec_envelope_applies_overrides_and_defaults() {
         assert_eq!(e.as_object().unwrap().len(), 6);
     }
 }
+
+// --------------------------------------------------------------------------
+// Identity rotation, through the real binary
+// --------------------------------------------------------------------------
+
+/// A pack whose sample is the customer's own three-event journey: the same
+/// user logs in and logs out, with a second user in between.
+fn rotation_pack(dir: &Path, token_extra: &[(&str, &str)]) -> PathBuf {
+    std::fs::create_dir_all(dir.join("default")).unwrap();
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(
+        dir.join("samples/sessions.sample"),
+        "user=483920 action=login\nuser=771045 action=register\nuser=483920 action=logout\n",
+    )
+    .unwrap();
+    let mut conf = String::from(
+        "[sessions.sample]\nmode = sample\ninterval = 1\ncount = -1\nearliest = -1s\nlatest = now\n\
+         outputMode = stdout\nend = 3\n\
+         token.0.token = user=(\\d+)\ntoken.0.replacementType = rotate\ntoken.0.replacement = keep\n",
+    );
+    for (k, v) in token_extra {
+        conf.push_str(&format!("{k} = {v}\n"));
+    }
+    let path = dir.join("default/eventgen.conf");
+    std::fs::write(&path, conf).unwrap();
+    path
+}
+
+fn generate(conf: &Path, cwd: &Path, env: &[(&str, &str)]) -> Vec<String> {
+    let mut cmd = Command::new(bin());
+    cmd.args(["generate"]).arg(conf).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect()
+}
+
+fn field(line: &str, key: &str) -> String {
+    line.split_whitespace()
+        .find_map(|p| p.strip_prefix(key))
+        .unwrap_or_else(|| panic!("no {key} in {line}"))
+        .to_string()
+}
+
+#[test]
+fn rotation_gives_each_replay_a_new_user_who_still_joins() {
+    // The whole point: a stable stand-in replays one user logging in ten
+    // thousand times, which makes anything that groups by user meaningless.
+    // Each pass must be a NEW user whose login and logout still belong
+    // together.
+    let dir = tmpdir("rotate-pass");
+    let conf = rotation_pack(&dir, &[]);
+    let lines = generate(&conf, &dir, &[]);
+    assert_eq!(lines.len(), 9, "3 events x 3 intervals: {lines:?}");
+
+    // The originals must be gone: rotation replaces them.
+    assert!(!lines.iter().any(|l| l.contains("483920") || l.contains("771045")), "{lines:?}");
+
+    let mut journeys: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for line in &lines {
+        journeys.entry(field(line, "user=")).or_default().push(field(line, "action="));
+    }
+    // 3 passes x 2 users per pass, every identity distinct.
+    assert_eq!(journeys.len(), 6, "{journeys:?}");
+    let mut shapes: Vec<Vec<String>> = journeys.into_values().collect();
+    for shape in shapes.iter_mut() {
+        shape.sort();
+    }
+    shapes.sort();
+    assert_eq!(
+        shapes,
+        vec![
+            vec!["login".to_string(), "logout".to_string()],
+            vec!["login".to_string(), "logout".to_string()],
+            vec!["login".to_string(), "logout".to_string()],
+            vec!["register".to_string()],
+            vec!["register".to_string()],
+            vec!["register".to_string()],
+        ],
+        "each pass must be one complete journey plus one registration"
+    );
+}
+
+#[test]
+fn rotation_keeps_the_field_format() {
+    // The customer's extractions, numeric comparisons and dashboards all
+    // depend on the id still looking like an id.
+    let dir = tmpdir("rotate-format");
+    let conf = rotation_pack(&dir, &[]);
+    for line in generate(&conf, &dir, &[]) {
+        let user = field(&line, "user=");
+        assert_eq!(user.len(), 6, "{line}");
+        assert!(user.chars().all(|c| c.is_ascii_digit()), "{line}");
+    }
+}
+
+#[test]
+fn rotation_widens_on_request() {
+    let dir = tmpdir("rotate-widen");
+    let conf = rotation_pack(&dir, &[("token.0.replacement", "digits(15)")]);
+    for line in generate(&conf, &dir, &[]) {
+        let user = field(&line, "user=");
+        assert_eq!(user.len(), 15, "{line}");
+        assert!(user.chars().all(|c| c.is_ascii_digit()), "{line}");
+    }
+}
+
+#[test]
+fn two_worker_slots_never_mint_the_same_identity() {
+    // The property that matters at the customer's 58 slots: every worker walks
+    // the same ordinals, and no identity may appear in two of them.
+    let dir = tmpdir("rotate-slots");
+    let conf = rotation_pack(&dir, &[("token.0.replacement", "digits(12)")]);
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for slot in 0..4u32 {
+        for line in generate(&conf, &dir, &[("STOKER_ROTATE_WORKERS", "4"), ("STOKER_ROTATE_SLOT", &slot.to_string())])
+        {
+            let user = field(&line, "user=");
+            if let Some(other) = seen.insert(user.clone(), slot) {
+                assert_eq!(other, slot, "identity {user} minted by slot {other} and slot {slot}");
+            }
+        }
+    }
+    assert!(seen.len() >= 20, "only {} identities over 4 slots", seen.len());
+}
+
+#[test]
+fn a_restart_resumes_on_a_pass_boundary() {
+    // Resuming mid-pass would re-mint an identity already sent to Splunk, so
+    // the base is rounded up to the next pass.
+    let dir = tmpdir("rotate-resume");
+    let conf = rotation_pack(&dir, &[]);
+    let first = generate(&conf, &dir, &[]);
+    // 9 events over a 3-line sample is 3 whole passes, so resuming at 9 must
+    // give identities none of the first run used.
+    let after = generate(&conf, &dir, &[("STOKER_ROTATE_BASE", "9")]);
+    let before: std::collections::HashSet<String> = first.iter().map(|l| field(l, "user=")).collect();
+    for line in &after {
+        assert!(!before.contains(&field(line, "user=")), "{line} repeats a sent identity");
+    }
+    // A base inside a pass is rounded UP rather than splitting the pass, so
+    // every base in (9, 12] starts at the same place: ordinal 12, pass 4.
+    let ids = |base: &str| {
+        generate(&conf, &dir, &[("STOKER_ROTATE_BASE", base)])
+            .iter()
+            .map(|l| field(l, "user="))
+            .collect::<std::collections::HashSet<_>>()
+    };
+    assert_eq!(ids("10"), ids("12"), "a mid-pass base must round up to the next pass");
+    assert_eq!(ids("10"), ids("11"));
+    assert_ne!(ids("10"), ids("9"), "and 9 is already a boundary, so it is a pass earlier");
+}
+
+#[test]
+fn aligned_rotation_joins_two_unrelated_samples() {
+    // The cross-sourcetype option. Two packs that share neither a sample, a
+    // line count nor a fleet must still land on the same identity for the same
+    // stand-in, or a correlation search that joins web to auth returns nothing.
+    let web = tmpdir("rotate-aligned-web");
+    let auth = tmpdir("rotate-aligned-auth");
+    std::fs::create_dir_all(web.join("default")).unwrap();
+    std::fs::create_dir_all(web.join("samples")).unwrap();
+    std::fs::create_dir_all(auth.join("default")).unwrap();
+    std::fs::create_dir_all(auth.join("samples")).unwrap();
+    std::fs::write(web.join("samples/web.sample"), "client=483920 path=/home\n").unwrap();
+    std::fs::write(
+        auth.join("samples/auth.sample"),
+        "src=10.0.0.1 client=483920 result=ok\nsrc=10.0.0.2 client=999111 result=fail\n",
+    )
+    .unwrap();
+    let stanza = |name: &str, workers: &str| {
+        format!(
+            "[{name}]\nmode = sample\ninterval = 1\ncount = -1\nearliest = now\nlatest = now\n\
+             outputMode = stdout\nend = 1\nrotate.scope = window\nrotate.period = 3600\n\
+             token.0.token = client=(\\d+)\ntoken.0.replacementType = rotate\n\
+             token.0.replacement = keep\n{workers}"
+        )
+    };
+    std::fs::write(web.join("default/eventgen.conf"), stanza("web.sample", "")).unwrap();
+    std::fs::write(auth.join("default/eventgen.conf"), stanza("auth.sample", "")).unwrap();
+
+    // Different fleets as well as different samples, since the aligned scope
+    // must ignore the slot entirely.
+    let from_web = generate(
+        &web.join("default/eventgen.conf"),
+        &web,
+        &[("STOKER_ROTATE_WORKERS", "4"), ("STOKER_ROTATE_SLOT", "3")],
+    );
+    let from_auth = generate(&auth.join("default/eventgen.conf"), &auth, &[]);
+    let web_id = field(&from_web[0], "client=");
+    let auth_ids: Vec<String> = from_auth.iter().map(|l| field(l, "client=")).collect();
+    assert!(auth_ids.contains(&web_id), "{web_id} not in {auth_ids:?}: the join would fail");
+    assert_ne!(web_id, "483920", "the original must still be replaced");
+    assert_eq!(web_id.len(), 6);
+}

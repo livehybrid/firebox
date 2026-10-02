@@ -53,6 +53,15 @@ firebox bench path/to/default/eventgen.conf --seconds 5
   (`ipv4`, `ipv6`, `mac`, `guid`, `integer[a:b]`, `float[a:b]`, `string(n)`,
   `hex(n)`, `list[...]`), `file`, `mvfile` (`path:column`), `seqfile`,
   `integerid` (with state files), `host.token`/`host.replacement`.
+- **Identity rotation** (`rotate`, a firebox and Stoker extension, not in
+  upstream eventgen): mints a new identity for every pass over the sample, in
+  the format of the value it replaces, so a replayed journey is a different
+  user each time round instead of one user logging in ten thousand times.
+  `rotate.scope = pass` (default) counts passes and is collision-free by
+  construction, including across worker slots; `rotate.scope = window` with
+  `rotate.period` counts clock windows instead, so the same id lines up across
+  sourcetypes, packs and runs at the cost of a birthday-rate collision chance.
+  `token.N.replacement` is `keep`, `digits(N)`, `hex(N)` or `guid`.
 - **Samples**: `sampletype = raw` with the default or a custom `breaker`,
   `sampletype = csv` with per-row `index`/`host`/`source`/`sourcetype`,
   `randomizeEvents`, `bundlelines`, `sequentialTimestamp`, `extendIndexes`,

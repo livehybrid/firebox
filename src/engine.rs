@@ -23,10 +23,11 @@ use crate::gen;
 use crate::output::{Output, Outputs, Writer};
 use crate::pyre::RxLocal;
 use crate::rate::{randomize_count_factor, rated_count, PerDayVolumeRater, RateMaps};
+use crate::rotate;
 use crate::sample::{self, SampleData, DEFAULT_BREAKER};
 use crate::strftime::Ts;
 use crate::timeparse;
-use crate::token::{EventCtx, Token};
+use crate::token::{self, EventCtx, Token};
 
 /// Events per job. Bounds per-batch memory and lets one interval spread over
 /// every worker.
@@ -82,6 +83,9 @@ pub struct Sample {
     pub name: String,
     pub data: SampleData,
     pub tokens: Vec<Token>,
+    /// Identity rotation state, shared by every `rotate` token in the stanza,
+    /// or None when the stanza does not rotate.
+    pub rotation: Option<Arc<rotate::State>>,
     pub host_token: Option<Token>,
     pub meta: Arc<Meta>,
     pub index_list: Vec<Arc<str>>,
@@ -136,11 +140,36 @@ impl Sample {
         if matches!(generator, Generator::Default | Generator::PerDayVolume | Generator::Replay) && data.is_empty() {
             anyhow::bail!("sample '{}' has no events", conf.name);
         }
+        // Rotation state has to exist before the tokens that share it, and
+        // the sample data is already loaded above, so the line count is known.
+        let rotation = if conf.tokens.iter().any(|t| t.replacement_type == "rotate") {
+            let scope = rotate::Scope::parse(
+                conf.get("rotate.scope").unwrap_or(""),
+                conf.get_i64("rotate.period").filter(|v| *v > 0).map(|v| v as u64),
+            )
+            .map_err(|e| anyhow::anyhow!("stanza '{}': {}", conf.name, e))?;
+            let fleet = rotate::Fleet::from_env();
+            log::info!(
+                "sample '{}' rotates identities: scope {:?}, worker {} of {}",
+                conf.name,
+                scope,
+                fleet.slot,
+                fleet.workers
+            );
+            Some(Arc::new(rotate::State::new(data.len(), fleet.workers, fleet.slot, fleet.base, scope)))
+        } else {
+            None
+        };
         let mut tokens = Vec::with_capacity(conf.tokens.len());
         for spec in conf.tokens.iter() {
-            let t = Token::compile(spec, &cwd, &conf.sample_dir, 0)
+            let t = Token::compile_with(spec, &cwd, &conf.sample_dir, 0, rotation.as_ref())
                 .map_err(|e| anyhow::anyhow!("stanza '{}' token {}: {}", conf.name, spec.index, e))?;
             tokens.push(t);
+        }
+        // The identity tables come from the sample itself, walked in file order
+        // so that every worker and both engines number the values identically.
+        if let Some(state) = &rotation {
+            state.set_tables(token::build_rotation_tables(&tokens, data.lines.iter().map(|l| l.raw.as_str())));
         }
         // Multivalue file tokens share one picked line per event when they
         // read the same file (upstream keys its mvhash by file path), so the
@@ -244,6 +273,7 @@ impl Sample {
             replay_lines: Vec::new(),
             data,
             tokens,
+            rotation,
             host_token,
             meta,
             conf,
@@ -334,6 +364,9 @@ pub struct Job {
     pub lt: Ts,
     /// (offset, total) for `sequentialTimestamp` numbering across chunks.
     pub seq: Option<(usize, usize)>,
+    /// First rotation ordinal of this interval's work. Zero for a stanza that
+    /// does not rotate.
+    pub ordinal_base: u64,
     /// Drop the job unrun after this instant (a stalled sink must not replay
     /// the past). `None` for backfill work.
     pub deadline: Option<Instant>,
@@ -626,6 +659,12 @@ fn timer_loop(
                 }
             };
             let total: usize = jobs.iter().map(gen::plan_events).sum();
+            // One atomic add per timer fire: the blocks are disjoint and
+            // increasing, so an ordinal belongs to exactly one event and a pass
+            // is exactly a run of `lines` consecutive ordinals. Reserving here
+            // rather than per event is also what makes passes continuous across
+            // intervals, instead of leaving an orphaned part-pass at each fire.
+            let ordinal_base = s.rotation.as_ref().map(|r| r.reserve(total as u64)).unwrap_or(0);
             let mut offset = 0usize;
             let mut sent_all = true;
             for plan in jobs {
@@ -636,6 +675,7 @@ fn timer_loop(
                     et: s.ts(&et),
                     lt: s.ts(&lt),
                     seq: Some((offset, total)),
+                    ordinal_base,
                     deadline,
                     now: now_ts,
                 };
@@ -708,6 +748,7 @@ fn backfill_sweep(
             }
         };
         let total: usize = plans.iter().map(gen::plan_events).sum();
+        let ordinal_base = s.rotation.as_ref().map(|r| r.reserve(total as u64)).unwrap_or(0);
         let mut offset = 0usize;
         for plan in plans {
             let n = gen::plan_events(&plan);
@@ -717,6 +758,7 @@ fn backfill_sweep(
                 et: s.ts(&et),
                 lt: s.ts(&lt),
                 seq: Some((offset, total)),
+                ordinal_base,
                 deadline: None,
                 now: ts,
             };
@@ -864,6 +906,12 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                 }
             };
             ctx.pivot = Some(pivot);
+            if s.rotation.is_some() {
+                // `pass` scope reads the ordinal, `window` scope the time, so
+                // both travel and neither needs its own path through here.
+                let ordinal = job.ordinal_base + seq_i.unwrap_or(0) as u64;
+                ctx.rotate_at = Some(rotate::Position::new(ordinal, pivot_epoch));
+            }
             let mut raw = pool.pop().unwrap_or_default();
             raw.clear();
             raw.push_str(&line.raw);
@@ -896,12 +944,20 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
             events.push(EventOut { raw, time: TimeVal::Int(pivot_epoch), meta });
         };
         let n = s.data.len();
+        // Under `pass` scope the line must follow the ordinal, or a part-pass
+        // is orphaned at the end of every interval and its identity never
+        // completes its journey. Every other stanza keeps the existing
+        // restart-at-`start` behaviour exactly.
+        let rotate_lines = s.rotation.as_ref().filter(|r| !r.scope().is_aligned()).map(|_| job.ordinal_base);
         match &job.plan {
             Plan::Lines { start, count } => {
                 for i in 0..*count {
-                    let line = &s.data.lines[(start + i) % n];
                     let seq_i = job.seq.map(|(off, _)| off + i);
-                    emit(line, seq_i, &mut ctx);
+                    let idx = match rotate_lines {
+                        Some(base) => ((base + seq_i.unwrap_or(i) as u64) % n as u64) as usize,
+                        None => (start + i) % n,
+                    };
+                    emit(&s.data.lines[idx], seq_i, &mut ctx);
                 }
             }
             Plan::RandomLines { count } => {

@@ -36,9 +36,48 @@ zero-padded lower-case pairs; `guid` is a lower-case UUID4. `file`/`mvfile`
 pick a random line (`seqfile` picks in order); `path:N` selects column N of a
 comma-split line and, within one event, every token reading the same file
 sees the same picked line. `integerid` counts up from its replacement and
-persists `state.<quoted token>` in the sample directory. `timestamp` needs
+persists `state.<quoted token>` in the sample directory. `rotate` has no
+upstream equivalent and is documented below. `timestamp` needs
 `lt >= et` and a format with at least one conversion. `rated` multiplies an
 integer/float by the hour-of-day and day-of-week maps (Sunday = 0).
+
+**Identity rotation (`rotate`).** A firebox and Stoker extension, so a pack
+using it is not portable to upstream eventgen, which drops an unknown
+`replacementType` and emits the matched text verbatim. That degradation is
+deliberately safe: the pack holds pseudonymised stand-ins already, so an engine
+that has never heard of `rotate` emits the stable stand-in rather than leaking
+anything.
+
+Unlike every other replacement type, `rotate` is evaluated **per match**, not
+once per event: the replacement is a function of the matched text, so two
+different ids in one event rotate to two different values.
+
+Under the default `rotate.scope = pass` the identity is a counter,
+`(pass x workers + slot) x D + k`, where `pass` is how many times the stanza's
+event ordinal has wrapped the sample, `D` the number of distinct sample values
+sharing that format class and `k` the value's position in that class. Read right
+to left that is a mixed-radix number, so it is injective: two passes and two
+worker slots can never mint the same identity. `D` and `k` come from tables
+built from the sample at load, walked line by line in file order, then token by
+token in conf order, then match by match left to right, so every worker and
+both engines derive them identically and nothing has to ship with the pack.
+A rotating stanza also selects its sample line by ordinal rather than
+restarting at line 0 each interval, so a pass is never left part-finished.
+`STOKER_ROTATE_WORKERS`, `STOKER_ROTATE_SLOT` and `STOKER_ROTATE_BASE` carry
+the fleet position and the resume point; a resume is rounded up to the next
+pass boundary, because resuming mid-pass would re-mint an identity already
+sent. Exhausting the format's space is logged once and then wraps rather than
+failing the run.
+
+Under `rotate.scope = window` (with `rotate.period`, default 60 seconds) the
+identity is instead `mix(stand-in, epoch / period) mod space(F)`, a function of
+the value and the clock alone. Every pack, run and worker slot computes the same
+value, so an id joins across sourcetypes, which a pass counter cannot do because
+the ordinal and the line count are private to one stanza. The trade is that a
+hash collides where a counter cannot, at the birthday rate for the field's
+format, and that cardinality becomes `distinct values x duration / period`. The
+mixer is FNV-1a-64 then splitmix64's finaliser, pinned by
+`fixtures/format_vectors.json`, which both engines are tested against.
 
 **Timestamps.** Naive local time (`datetime.now()`); `timezone = +HHMM` gives
 `utcnow() + offset`. The default generator picks a random whole second in

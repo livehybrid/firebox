@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -17,6 +18,7 @@ use rand::Rng;
 use crate::conf::TokenSpec;
 use crate::pyre::{Rx, RxLocal, Span};
 use crate::rate::{py_round, RateMaps};
+use crate::rotate;
 use crate::strftime::{Layout, Ts};
 
 const URL_SAFE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-~/";
@@ -116,6 +118,15 @@ pub struct FileSpec {
     pub file_id: usize,
 }
 
+/// A `rotate` token: the format policy, plus the per-stanza rotation state it
+/// shares with every other rotate token in the stanza (so a value matched by
+/// two patterns rotates as one identity).
+#[derive(Debug)]
+pub struct RotateArgs {
+    pub policy: rotate::Policy,
+    pub state: Arc<rotate::State>,
+}
+
 #[derive(Debug)]
 pub enum Kind {
     Static(String),
@@ -125,6 +136,9 @@ pub enum Kind {
     Rated(RandomSpec),
     File(FileSpec),
     IntegerId(AtomicI64),
+    /// Identity rotation: unlike every other kind this evaluates PER MATCH,
+    /// because the replacement is a function of the matched text.
+    Rotate(RotateArgs),
     /// A replacement that can never work (logged once at load).
     Broken,
 }
@@ -134,6 +148,81 @@ pub struct Token {
     pub rx: Rx,
     pub kind: Kind,
     pub spec: TokenSpec,
+}
+
+/// Build a stanza's rotation identity tables from its own sample.
+///
+/// Walked **line by line in file order, then token by token in conf order,
+/// then match by match left to right**. That order defines each value's `k`,
+/// and `k` is part of the identity, so firebox and the vendored Python engine
+/// must walk it the same way or a pack split across both engines would mint
+/// two different identities for one value. It is also why nothing has to be
+/// shipped with the pack: every worker derives the same tables from the sample.
+///
+/// Only `pass` scope reads these. `window` scope derives the identity from the
+/// value itself, so it needs no table, and building one would be wasted work on
+/// a large sample.
+pub fn build_rotation_tables<'a, I>(tokens: &[Token], lines: I) -> rotate::Tables
+where
+    I: Iterator<Item = &'a str>,
+{
+    let rotating: Vec<(&RotateArgs, RxLocal)> = tokens
+        .iter()
+        .filter_map(|t| match &t.kind {
+            Kind::Rotate(args) => Some((args, RxLocal::new(&t.rx))),
+            _ => None,
+        })
+        .collect();
+    let mut tables = rotate::Tables::default();
+    if rotating.is_empty() || rotating.iter().any(|(a, _)| a.state.scope().is_aligned()) {
+        return tables;
+    }
+    let mut rotating = rotating;
+    let mut spans: Vec<Span> = Vec::with_capacity(8);
+    for line in lines {
+        for (args, local) in rotating.iter_mut() {
+            local.find_all(line, &mut spans);
+            for sp in spans.iter() {
+                let (s, e) = sp.target();
+                tables.observe_policy(&args.policy, &line[s..e]);
+            }
+        }
+    }
+    tables
+}
+
+/// Splice a rotated value into every match, each derived from its own text.
+fn rotate_spans(event: &mut String, ctx: &mut EventCtx<'_>, args: &RotateArgs) -> bool {
+    let Some(at) = ctx.rotate_at else {
+        // Not a rotating stanza (or the position was never set): leave the text
+        // alone, which emits the stable stand-in.
+        return false;
+    };
+    let EventCtx { spans, scratch, .. } = ctx;
+    scratch.clear();
+    let mut pos = 0usize;
+    let mut changed = false;
+    for sp in spans.iter() {
+        let (s, e) = sp.target();
+        if s < pos {
+            continue;
+        }
+        scratch.push_str(&event[pos..s]);
+        match Token::rotate_one(args, &event[s..e], at) {
+            Some(v) => {
+                changed |= v != event[s..e];
+                scratch.push_str(&v);
+            }
+            None => scratch.push_str(&event[s..e]),
+        }
+        pos = e;
+    }
+    scratch.push_str(&event[pos..]);
+    if !changed {
+        return false;
+    }
+    std::mem::swap(event, scratch);
+    true
 }
 
 /// Per-event, per-thread scratch state handed to every token.
@@ -157,6 +246,10 @@ pub struct EventCtx<'a> {
     /// The `earliest`/`latest` strings are set (they always are after
     /// layering, but upstream checks).
     pub window_declared: bool,
+    /// Where this event sits, for `rotate`: its ordinal within the stanza and
+    /// its event time. None outside a rotating stanza, which leaves the text
+    /// alone rather than guessing a position.
+    pub rotate_at: Option<rotate::Position>,
 }
 
 impl<'a> EventCtx<'a> {
@@ -173,6 +266,7 @@ impl<'a> EventCtx<'a> {
             scratch: String::with_capacity(1024),
             value: String::with_capacity(64),
             window_declared: true,
+            rotate_at: None,
         }
     }
 
@@ -188,6 +282,18 @@ impl Token {
     /// tried as a fallback so `samples/foo.sample` also works when the process
     /// was started elsewhere); `sample_dir` holds integerid state files.
     pub fn compile(spec: &TokenSpec, cwd: &Path, sample_dir: &Path, file_id: usize) -> Result<Token, String> {
+        Token::compile_with(spec, cwd, sample_dir, file_id, None)
+    }
+
+    /// As [`Token::compile`], with the stanza's rotation state for `rotate`
+    /// tokens. Separate so the six non-rotating call sites stay unchanged.
+    pub fn compile_with(
+        spec: &TokenSpec,
+        cwd: &Path,
+        sample_dir: &Path,
+        file_id: usize,
+        rotation: Option<&Arc<rotate::State>>,
+    ) -> Result<Token, String> {
         let rx = Rx::compile(&spec.token)?;
         let kind = match spec.replacement_type.as_str() {
             "static" => Kind::Static(spec.replacement.clone()),
@@ -218,6 +324,20 @@ impl Token {
                 }
                 Kind::IntegerId(AtomicI64::new(start))
             }
+            "rotate" => match (rotate::Policy::parse(&spec.replacement), rotation) {
+                (Ok(policy), Some(state)) => Kind::Rotate(RotateArgs { policy, state: state.clone() }),
+                (Err(e), _) => {
+                    log::error!("{}; will not replace", e);
+                    Kind::Broken
+                }
+                (Ok(_), None) => {
+                    // Cannot happen: the stanza builds the state whenever any
+                    // token rotates. Degrade to leaving the text alone, which
+                    // emits the stable stand-in rather than the original.
+                    log::error!("token {} rotates but the stanza has no rotation state", spec.index);
+                    Kind::Broken
+                }
+            },
             other => {
                 log::error!("Unknown replacementType '{}'; will not replace", other);
                 Kind::Broken
@@ -235,6 +355,17 @@ impl Token {
 
     pub fn is_timestamp(&self) -> bool {
         matches!(self.kind, Kind::Timestamp(_) | Kind::ReplayTimestamp(_))
+    }
+
+    /// Rotate every match independently, each from its own matched text.
+    ///
+    /// Shares the splice loop's shape with the one-value path above but reads
+    /// the span's text for each replacement. A span whose text has nothing to
+    /// rotate (not in the sample under `pass` scope, or no variable position)
+    /// is copied through, so an unexpected value is left as the stable stand-in
+    /// rather than replaced with something arbitrary.
+    fn rotate_one(args: &RotateArgs, text: &str, at: rotate::Position) -> Option<String> {
+        args.state.render(&args.policy, text, at)
     }
 
     /// Persist an integerid counter the way `Sample.saveState` does.
@@ -256,6 +387,13 @@ impl Token {
         local.find_all(event, &mut ctx.spans);
         if ctx.spans.is_empty() {
             return false;
+        }
+        // Every other kind computes ONE value and splices it into every match.
+        // Rotation cannot: the identity is derived from the matched text, so
+        // two different ids in one event must rotate to two different values.
+        // Branch here so the shared path below stays exactly as it was.
+        if let Kind::Rotate(args) = &self.kind {
+            return rotate_spans(event, ctx, args);
         }
         ctx.value.clear();
         let ok = match &self.kind {
@@ -281,6 +419,9 @@ impl Token {
                 let _ = write!(ctx.value, "{}", counter.fetch_add(1, Ordering::Relaxed));
                 true
             }
+            // Handled by the per-match branch above; false keeps the text as
+            // it is if that branch is ever bypassed.
+            Kind::Rotate(_) => false,
             Kind::Broken => false,
         };
         if !ok {

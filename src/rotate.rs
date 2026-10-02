@@ -276,6 +276,39 @@ impl Tables {
     }
 }
 
+/// How this worker fits into the run's fleet, from the environment the Stoker
+/// agent sets when it launches the engine.
+///
+/// The slot is what keeps workers disjoint under `pass` scope, so getting it
+/// wrong is the one way two workers could mint the same identity. Defaults are
+/// a single worker at slot 0, which is correct for a standalone `firebox
+/// generate`.
+#[derive(Clone, Copy, Debug)]
+pub struct Fleet {
+    pub workers: u64,
+    pub slot: u64,
+    /// Ordinal to resume from after a restart (`STOKER_ROTATE_BASE`).
+    pub base: u64,
+}
+
+impl Fleet {
+    pub fn from_env() -> Fleet {
+        fn num(key: &str, default: u64) -> u64 {
+            std::env::var(key).ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(default)
+        }
+        let workers = num("STOKER_ROTATE_WORKERS", 1).max(1);
+        let mut slot = num("STOKER_ROTATE_SLOT", 0);
+        if slot >= workers {
+            log::error!(
+                "STOKER_ROTATE_SLOT {slot} is not below STOKER_ROTATE_WORKERS {workers}; \
+                 clamping, but two workers may now share identities"
+            );
+            slot = workers - 1;
+        }
+        Fleet { workers, slot, base: num("STOKER_ROTATE_BASE", 0) }
+    }
+}
+
 /// Per-stanza rotation state, shared by every `rotate` token in the stanza so
 /// that a value matched by two different patterns rotates as one identity.
 #[derive(Debug)]
@@ -296,10 +329,14 @@ pub struct State {
 
 impl State {
     pub fn new(lines: usize, workers: u64, slot: u64, base: u64, scope: Scope) -> State {
+        let lines = lines.max(1) as u64;
         State {
-            cursor: AtomicU64::new(base),
+            // Rounded up here rather than at the call site: resuming mid-pass
+            // would re-mint an identity already sent to Splunk, and that is too
+            // easy to forget somewhere else.
+            cursor: AtomicU64::new(round_up_to_pass(base, lines)),
             tables: OnceLock::new(),
-            lines: lines.max(1) as u64,
+            lines,
             workers: workers.max(1),
             slot,
             scope,
@@ -808,8 +845,7 @@ mod tests {
             path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             path.push("../fixtures/format_vectors.json");
         }
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         serde_json::from_str(&text).expect("fixture is not valid JSON")
     }
 
@@ -894,9 +930,7 @@ mod tests {
         let state = State::new(1, 1, 0, 0, Scope::Window { period: 1 });
         let window: u64 = row["window"].as_str().unwrap().parse().unwrap();
         assert_eq!(
-            state
-                .render(&policy_of(&row["widen"]), text, Position::new(0, window as i64))
-                .as_deref(),
+            state.render(&policy_of(&row["widen"]), text, Position::new(0, window as i64)).as_deref(),
             row["out"].as_str()
         );
     }

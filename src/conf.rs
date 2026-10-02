@@ -53,7 +53,7 @@ pub const GLOBAL_DEFAULTS: &[(&str, &str)] = &[
 ];
 
 pub const VALID_REPLACEMENT_TYPES: &[&str] =
-    &["static", "timestamp", "replaytimestamp", "random", "rated", "file", "mvfile", "seqfile", "integerid"];
+    &["static", "timestamp", "replaytimestamp", "random", "rated", "file", "mvfile", "seqfile", "integerid", "rotate"];
 
 /// Settings that are never inherited from another stanza during flattening.
 const NON_FLATTEN_KEYS: &[&str] = &["eai:acl", "blacklist", "disabled", "name"];
