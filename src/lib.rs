@@ -9,6 +9,7 @@ pub mod clock;
 pub mod conf;
 pub mod engine;
 pub mod envelope;
+pub mod format;
 pub mod gen;
 pub mod ini;
 pub mod output;
