@@ -516,3 +516,27 @@ fn aligned_rotation_joins_two_unrelated_samples() {
     assert_ne!(web_id, "483920", "the original must still be replaced");
     assert_eq!(web_id.len(), 6);
 }
+
+#[test]
+fn a_restart_does_not_resend_an_identity() {
+    // The case this protects against is a killed worker, so the cursor is
+    // written after every reservation, not only at a clean shutdown. A second
+    // run of the same stanza must not reuse any identity the first one sent.
+    let dir = tmpdir("rotate-persist");
+    let conf = rotation_pack(&dir, &[]);
+    let first = generate(&conf, &dir, &[]);
+    let state = dir.join("samples/state.rotate.sessions.sample");
+    assert!(state.is_file(), "the cursor was not recorded at {state:?}");
+    let recorded: u64 = std::fs::read_to_string(&state).unwrap().trim().parse().unwrap();
+    assert!(recorded >= 9, "recorded {recorded} for 9 events");
+
+    let second = generate(&conf, &dir, &[]);
+    let before: std::collections::HashSet<String> = first.iter().map(|l| field(l, "user=")).collect();
+    for line in &second {
+        assert!(!before.contains(&field(line, "user=")), "{line} reuses a sent identity");
+    }
+    // An explicit base from the agent still wins over the file.
+    let forced = generate(&conf, &dir, &[("STOKER_ROTATE_BASE", "900")]);
+    let third: std::collections::HashSet<String> = forced.iter().map(|l| field(l, "user=")).collect();
+    assert!(third.is_disjoint(&before));
+}

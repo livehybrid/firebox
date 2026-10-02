@@ -66,7 +66,12 @@ restarting at line 0 each interval, so a pass is never left part-finished.
 `STOKER_ROTATE_WORKERS`, `STOKER_ROTATE_SLOT` and `STOKER_ROTATE_BASE` carry
 the fleet position and the resume point; a resume is rounded up to the next
 pass boundary, because resuming mid-pass would re-mint an identity already
-sent. Exhausting the format's space is logged once and then wraps rather than
+sent. With no explicit base the cursor resumes from
+`<sampleDir>/state.rotate.<stanza>`, written after every reservation (not only
+at a clean shutdown, since a killed worker is the case it protects against), so
+a restart continues forwards instead of replaying identities Splunk has already
+seen. Resuming always moves forwards and therefore consumes capacity across
+runs of the same pack directory. Exhausting the format's space is logged once and then wraps rather than
 failing the run.
 
 Under `rotate.scope = window` (with `rotate.period`, default 60 seconds) the

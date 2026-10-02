@@ -156,7 +156,9 @@ impl Sample {
                 fleet.slot,
                 fleet.workers
             );
-            Some(Arc::new(rotate::State::new(data.len(), fleet.workers, fleet.slot, fleet.base, scope)))
+            let base =
+                rotate::State::resume_base(fleet.base, &token::rotation_state_file(&conf.sample_dir, &conf.name));
+            Some(Arc::new(rotate::State::new(data.len(), fleet.workers, fleet.slot, base, scope)))
         } else {
             None
         };
@@ -324,6 +326,13 @@ impl Sample {
         for t in &self.tokens {
             t.save_state(&self.conf.sample_dir);
         }
+        if let Some(r) = &self.rotation {
+            r.persist(&self.rotation_state_path());
+        }
+    }
+
+    pub fn rotation_state_path(&self) -> std::path::PathBuf {
+        token::rotation_state_file(&self.conf.sample_dir, &self.conf.name)
     }
 }
 
@@ -664,7 +673,14 @@ fn timer_loop(
             // is exactly a run of `lines` consecutive ordinals. Reserving here
             // rather than per event is also what makes passes continuous across
             // intervals, instead of leaving an orphaned part-pass at each fire.
-            let ordinal_base = s.rotation.as_ref().map(|r| r.reserve(total as u64)).unwrap_or(0);
+            let ordinal_base = match &s.rotation {
+                Some(r) => {
+                    let base = r.reserve(total as u64);
+                    r.persist(&s.rotation_state_path());
+                    base
+                }
+                None => 0,
+            };
             let mut offset = 0usize;
             let mut sent_all = true;
             for plan in jobs {

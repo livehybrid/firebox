@@ -481,6 +481,12 @@ fn state_file(sample_dir: &Path, token: &str) -> PathBuf {
     sample_dir.join(format!("state.{}", url_quote(token)))
 }
 
+/// Where a stanza's rotation cursor is kept, beside eventgen's own integerid
+/// state files and quoted the same way.
+pub fn rotation_state_file(sample_dir: &Path, stanza: &str) -> PathBuf {
+    sample_dir.join(format!("state.rotate.{}", url_quote(stanza)))
+}
+
 /// `urllib.request.pathname2url` / `quote` with `/` safe.
 fn url_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

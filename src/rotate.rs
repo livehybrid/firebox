@@ -373,6 +373,29 @@ impl State {
         self.cursor.load(Ordering::Relaxed)
     }
 
+    /// Record the cursor so a restart does not re-mint identities.
+    ///
+    /// Written after each reservation rather than only at shutdown: a worker
+    /// that is killed is exactly the case this protects against, and the file
+    /// is a dozen bytes. Over-recording is safe (a restart skips some
+    /// identities); under-recording would send one twice.
+    pub fn persist(&self, path: &std::path::Path) {
+        let _ = std::fs::write(path, self.cursor().to_string());
+    }
+
+    /// The ordinal to resume from: `STOKER_ROTATE_BASE` if the agent set one,
+    /// else whatever the last run of this stanza recorded.
+    ///
+    /// Resuming is always forwards. Starting a later run where an earlier one
+    /// stopped costs nothing but capacity, where restarting at zero would reuse
+    /// identities Splunk has already seen and merge two replays into one user.
+    pub fn resume_base(env_base: u64, path: &std::path::Path) -> u64 {
+        if env_base > 0 {
+            return env_base;
+        }
+        std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0)
+    }
+
     pub fn wraps(&self) -> u64 {
         self.wraps.load(Ordering::Relaxed)
     }
