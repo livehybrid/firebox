@@ -1,5 +1,5 @@
 {
-  "note": "Normative format-table vectors. server/packbuilder/pseudonym.py is the reference. `infer` and `rotate_render` are the CROSS-ENGINE contract: firebox and the vendored Python eventgen must reproduce them byte for byte. `mode1_render` uses the 256-bit HMAC digest as x and is build-time only, so it is a Python-to-Python contract (packbuilder vs server/preview.py) and no engine needs big integers for it. `window_render`, `window_index` and `mixer` are the aligned-rotation half of the cross-engine contract (rotate.scope = window): the identity is a function of the stand-in and the clock, so every engine, worker and pack must agree on it byte for byte or a client id stops joining across sourcetypes.",
+  "note": "Normative format-table vectors. server/packbuilder/pseudonym.py is the reference. `infer` and `rotate_render` are the CROSS-ENGINE contract: firebox and the vendored Python eventgen must reproduce them byte for byte. `mode1_render` uses the 256-bit HMAC digest as x and is build-time only, so it is a Python-to-Python contract (packbuilder vs server/preview.py) and no engine needs big integers for it. `window_render`, `window_index` and `mixer` are the aligned-rotation half of the cross-engine contract (rotate.scope = window): the identity is a function of the stand-in and the clock, so every engine, worker and pack must agree on it byte for byte or a client id stops joining across sourcetypes. `permute` and `pass_render` pin the pass-scope counter: the raw identity is a mixed-radix counter, spread over the format's space by an unkeyed four-round Feistel so it does not read as 100006, 100007, 100008, and both engines must agree on the permutation or two workers' identities would overlap.",
   "infer": [
     {
       "text": "123",
@@ -10410,5 +10410,1056 @@
         "out": "17665956581633026203"
       }
     ]
-  }
+  },
+  "permute": [
+    {
+      "x": "0",
+      "size": "1",
+      "out": "0"
+    },
+    {
+      "x": "1",
+      "size": "1",
+      "out": "0"
+    },
+    {
+      "x": "0",
+      "size": "2",
+      "out": "1"
+    },
+    {
+      "x": "1",
+      "size": "2",
+      "out": "0"
+    },
+    {
+      "x": "0",
+      "size": "3",
+      "out": "2"
+    },
+    {
+      "x": "1",
+      "size": "3",
+      "out": "0"
+    },
+    {
+      "x": "2",
+      "size": "3",
+      "out": "1"
+    },
+    {
+      "x": "0",
+      "size": "9",
+      "out": "4"
+    },
+    {
+      "x": "1",
+      "size": "9",
+      "out": "0"
+    },
+    {
+      "x": "2",
+      "size": "9",
+      "out": "3"
+    },
+    {
+      "x": "3",
+      "size": "9",
+      "out": "7"
+    },
+    {
+      "x": "0",
+      "size": "10",
+      "out": "4"
+    },
+    {
+      "x": "1",
+      "size": "10",
+      "out": "0"
+    },
+    {
+      "x": "2",
+      "size": "10",
+      "out": "3"
+    },
+    {
+      "x": "3",
+      "size": "10",
+      "out": "7"
+    },
+    {
+      "x": "0",
+      "size": "90",
+      "out": "35"
+    },
+    {
+      "x": "1",
+      "size": "90",
+      "out": "71"
+    },
+    {
+      "x": "2",
+      "size": "90",
+      "out": "26"
+    },
+    {
+      "x": "3",
+      "size": "90",
+      "out": "66"
+    },
+    {
+      "x": "17",
+      "size": "90",
+      "out": "75"
+    },
+    {
+      "x": "0",
+      "size": "900",
+      "out": "841"
+    },
+    {
+      "x": "1",
+      "size": "900",
+      "out": "217"
+    },
+    {
+      "x": "2",
+      "size": "900",
+      "out": "781"
+    },
+    {
+      "x": "3",
+      "size": "900",
+      "out": "256"
+    },
+    {
+      "x": "17",
+      "size": "900",
+      "out": "333"
+    },
+    {
+      "x": "899",
+      "size": "900",
+      "out": "8"
+    },
+    {
+      "x": "0",
+      "size": "9000",
+      "out": "5254"
+    },
+    {
+      "x": "1",
+      "size": "9000",
+      "out": "6587"
+    },
+    {
+      "x": "2",
+      "size": "9000",
+      "out": "7242"
+    },
+    {
+      "x": "3",
+      "size": "9000",
+      "out": "4654"
+    },
+    {
+      "x": "17",
+      "size": "9000",
+      "out": "8205"
+    },
+    {
+      "x": "899",
+      "size": "9000",
+      "out": "1802"
+    },
+    {
+      "x": "0",
+      "size": "900000",
+      "out": "363222"
+    },
+    {
+      "x": "1",
+      "size": "900000",
+      "out": "595508"
+    },
+    {
+      "x": "2",
+      "size": "900000",
+      "out": "593026"
+    },
+    {
+      "x": "3",
+      "size": "900000",
+      "out": "828073"
+    },
+    {
+      "x": "17",
+      "size": "900000",
+      "out": "565097"
+    },
+    {
+      "x": "899",
+      "size": "900000",
+      "out": "787792"
+    },
+    {
+      "x": "0",
+      "size": "6917529027641081856",
+      "out": "1382976322426880077"
+    },
+    {
+      "x": "1",
+      "size": "6917529027641081856",
+      "out": "5539531301801188241"
+    },
+    {
+      "x": "2",
+      "size": "6917529027641081856",
+      "out": "574398767684187146"
+    },
+    {
+      "x": "3",
+      "size": "6917529027641081856",
+      "out": "5986144759029705399"
+    },
+    {
+      "x": "17",
+      "size": "6917529027641081856",
+      "out": "4206056346495089396"
+    },
+    {
+      "x": "899",
+      "size": "6917529027641081856",
+      "out": "5546499770503656685"
+    },
+    {
+      "x": "1000000",
+      "size": "6917529027641081856",
+      "out": "1660270843903544175"
+    },
+    {
+      "x": "1000000000000",
+      "size": "6917529027641081856",
+      "out": "3652618274211805924"
+    },
+    {
+      "x": "0",
+      "size": "5316911983139663491615228241121378304",
+      "out": "3156269121645174840015513188835739545"
+    },
+    {
+      "x": "1",
+      "size": "5316911983139663491615228241121378304",
+      "out": "1838191441632494369084855916269343534"
+    },
+    {
+      "x": "2",
+      "size": "5316911983139663491615228241121378304",
+      "out": "3042938372718330599111965497687769958"
+    },
+    {
+      "x": "3",
+      "size": "5316911983139663491615228241121378304",
+      "out": "2357342798628347190765627975186012899"
+    },
+    {
+      "x": "17",
+      "size": "5316911983139663491615228241121378304",
+      "out": "977729680665067847153128627314145625"
+    },
+    {
+      "x": "899",
+      "size": "5316911983139663491615228241121378304",
+      "out": "2017394302945330789706976565572784375"
+    },
+    {
+      "x": "1000000",
+      "size": "5316911983139663491615228241121378304",
+      "out": "1347083440115125174806200125727682939"
+    },
+    {
+      "x": "1000000000000",
+      "size": "5316911983139663491615228241121378304",
+      "out": "1136344100891527027147771755059552511"
+    }
+  ],
+  "pass_render": [
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "463222"
+    },
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "693026"
+    },
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "928073"
+    },
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "581456"
+    },
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "588488"
+    },
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "820594"
+    },
+    {
+      "text": "483920",
+      "widen": null,
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "463833"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "5"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "4"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "8"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "7"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "9"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "6"
+    },
+    {
+      "text": "1",
+      "widen": null,
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "3"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "b46179"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "b8e033"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "f40eba"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "d1ee94"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "a02acb"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "a92d2d"
+    },
+    {
+      "text": "a1b2c3",
+      "widen": null,
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "e1319b"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "BB3F"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "EE13"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "D2FD"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "A0AC"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "EBB3"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "EF69"
+    },
+    {
+      "text": "ADA1",
+      "widen": null,
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "F47C"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "zgk.proqa"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "qaz.hejla"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "zjl.pvjzm"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "zgg.vrpyp"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "rfi.eevpo"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "yiw.gebga"
+    },
+    {
+      "text": "ada.smith",
+      "widen": null,
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "izl.rqfip"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "025fe015-1010-498f-aacd-fd11dbc34799"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "024a0c71-e862-430e-9b5b-eb91b8038366"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "01c601f9-2f46-4d63-8f75-b1eee6285ae3"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "0137cd0f-e425-4caf-8dd4-1c77042aed1d"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "009fa661-1b3e-415d-b2b9-8863046e2508"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "01a8f416-7fdd-4253-805b-9f605feb4e62"
+    },
+    {
+      "text": "3f2b1c9e-8a7d-4e21-9b3c-1d2e3f4a5b6c",
+      "widen": null,
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "0153960a-ddc7-48aa-a475-5f01f7876790"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "958924135425"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "211620995352"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "513556864010"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "118733711256"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "574382250917"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "145924746892"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 12
+      },
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "947557790048"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "595604135404165"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "778714077995627"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "988700923871227"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "449889338778754"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "363408522394813"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "431879051213040"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "digits",
+        "length": 15
+      },
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "183381784753273"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "b33151a34f07c04d"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "a7f8aca2cb3cf40a"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "f3130ef140082ab7"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "d16b5a630377280c"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "db68280df13624a9"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "a1869316a9dc3b59"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "hex",
+        "length": 16
+      },
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "b36cc9cd9e8e27df"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "0",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "1",
+      "k": "0",
+      "out": "025fe015-1010-498f-aacd-fd11dbc34799"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "0",
+      "out": "024a0c71-e862-430e-9b5b-eb91b8038366"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "1",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "01c601f9-2f46-4d63-8f75-b1eee6285ae3"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "7",
+      "workers": "1",
+      "slot": "0",
+      "distinct": "2",
+      "k": "1",
+      "out": "0137cd0f-e425-4caf-8dd4-1c77042aed1d"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "0",
+      "workers": "4",
+      "slot": "3",
+      "distinct": "2",
+      "k": "1",
+      "out": "009fa661-1b3e-415d-b2b9-8863046e2508"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "5",
+      "workers": "58",
+      "slot": "57",
+      "distinct": "1000",
+      "k": "999",
+      "out": "01a8f416-7fdd-4253-805b-9f605feb4e62"
+    },
+    {
+      "text": "483920",
+      "widen": {
+        "shape": "guid"
+      },
+      "pass": "123456",
+      "workers": "4",
+      "slot": "2",
+      "distinct": "3",
+      "k": "2",
+      "out": "0153960a-ddc7-48aa-a475-5f01f7876790"
+    }
+  ]
 }

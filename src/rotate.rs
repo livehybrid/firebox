@@ -424,24 +424,16 @@ impl State {
             }
         };
         let pass = ordinal / self.lines;
-        let ident = u128::from(pass)
-            .saturating_mul(u128::from(self.workers))
-            .saturating_add(u128::from(self.slot))
-            .saturating_mul(u128::from(d.max(1)))
-            .saturating_add(u128::from(k));
+        let ident = ident(pass, self.workers, self.slot, d, k);
+        // Checked on the raw counter: that is what exhausts, and the
+        // permutation below is a bijection so it cannot change when.
         if ident >= space && self.wraps.fetch_add(1, Ordering::Relaxed) == 0 {
             log::error!(
                 "rotate: the identity space of {format} is exhausted after {pass} passes; \
                  identities now repeat. Widen this field."
             );
         }
-        Some(match format {
-            // A GUID that counted upwards would be obviously synthetic, so the
-            // high bits carry a hash of the value. The low bits still carry the
-            // identity, so uniqueness is unaffected.
-            Format::Guid => (u128::from(fnv1a64(text)) << 64) | (ident & u128::from(u64::MAX)),
-            _ => ident,
-        })
+        Some(permute(ident, space))
     }
 }
 
@@ -456,6 +448,66 @@ pub fn aligned_ident(text: &str, window: u64, space: u128) -> u128 {
     let hi = mix64(lo ^ 0xa5a5_a5a5_a5a5_a5a5);
     let x = (u128::from(hi) << 64) | u128::from(lo);
     x % space.max(1)
+}
+
+/// The raw rotation counter: `(pass x workers + slot) x distinct + k`.
+///
+/// A mixed-radix number read right to left, so the map is injective: two passes
+/// and two worker slots can never produce the same number.
+pub fn ident(pass: u64, workers: u64, slot: u64, distinct: u64, k: u64) -> u128 {
+    u128::from(pass)
+        .saturating_mul(u128::from(workers.max(1)))
+        .saturating_add(u128::from(slot))
+        .saturating_mul(u128::from(distinct.max(1)))
+        .saturating_add(u128::from(k))
+}
+
+/// Spread a counter uniformly over `[0, n)` without losing injectivity.
+///
+/// The raw identity is a counter, so rendered directly it produces 100006,
+/// 100007, 100008 ... clustered at the bottom of the space, and widening only
+/// adds leading zeros (100000000000006). Real identifiers do not look like
+/// that, and anything in the system under test that buckets or hashes on the
+/// field sees a distribution it would never see in production.
+///
+/// A permutation fixes the look while keeping every guarantee: it is a
+/// bijection on the space, so two distinct counters still give two distinct
+/// identities, and the slot and pass disjointness arguments are untouched.
+///
+/// Four-round balanced Feistel over the next even power of two, with
+/// cycle-walking back into range, which is the standard construction for a
+/// format-preserving permutation on a space that is not a power of two. No key:
+/// the identities are synthetic, so there is nothing to keep secret, and both
+/// engines must agree.
+pub fn permute(x: u128, n: u128) -> u128 {
+    if n <= 1 {
+        return 0;
+    }
+    // Smallest `half` with 2^(2*half) >= n, so the Feistel domain covers the
+    // space and `half` stays inside u64 even for a GUID's 122 bits.
+    let bits = 128 - (n - 1).leading_zeros() as usize;
+    let half = bits.div_ceil(2);
+    let mask: u128 = (1u128 << half) - 1;
+    let mut v = x % n;
+    // Cycle-walking: re-encrypt until the result lands in range. The domain is
+    // under 4n, so this terminates quickly and always (the Feistel is a
+    // permutation, so walking a cycle cannot loop forever).
+    for _ in 0..64 {
+        let mut l = (v >> half) & mask;
+        let mut r = v & mask;
+        for round in 0..4u64 {
+            let f = u128::from(mix64((r as u64).wrapping_add(round.wrapping_mul(0x9e37_79b9)))) & mask;
+            let next = l ^ f;
+            l = r;
+            r = next;
+        }
+        v = (l << half) | r;
+        if v < n {
+            return v;
+        }
+    }
+    // Unreachable for any real space; fall back to the counter rather than loop.
+    x % n
 }
 
 /// splitmix64's finaliser: cheap, dependency-free, and avalanches well enough
@@ -680,9 +732,9 @@ mod tests {
         assert_ne!(a, b, "a new pass is a new GUID");
         assert_eq!(a.len(), 36);
         assert_eq!(&a[14..15], "4");
-        // the leading bytes come from the value, not the counter, so two
-        // consecutive passes do not look consecutive
-        assert_eq!(a[..8], b[..8]);
+        // Consecutive passes must not look consecutive: the permutation spreads
+        // the counter over the whole 122-bit space.
+        assert_ne!(a[..8], b[..8]);
         assert_eq!(format::infer(&a), Format::Guid);
     }
 
@@ -716,6 +768,51 @@ mod tests {
         let out = s.render(&wide, "123", at(0)).expect("widened value must rotate");
         assert_eq!(out.len(), 15);
         assert_eq!(s.unknown(), 0);
+    }
+
+    #[test]
+    fn the_permutation_is_a_bijection() {
+        // The whole guarantee rests on this: if two counters ever permuted to
+        // one value, two passes or two worker slots could share an identity.
+        // Checked exhaustively on spaces that are not powers of two, which is
+        // where the cycle-walking runs.
+        for n in [2u128, 3, 9, 10, 17, 90, 100, 900, 901, 4096, 9000] {
+            let mut seen = vec![false; n as usize];
+            for x in 0..n {
+                let v = permute(x, n);
+                assert!(v < n, "permute({x}, {n}) = {v} out of range");
+                assert!(!seen[v as usize], "permute collided at {x} in space {n}");
+                seen[v as usize] = true;
+            }
+        }
+        assert_eq!(permute(0, 1), 0);
+        assert_eq!(permute(5, 0), 0);
+    }
+
+    #[test]
+    fn the_permutation_scatters_a_counter() {
+        // A counter rendered directly gives 100006, 100007, 100008 ...; the
+        // point of permuting is that consecutive identities look unrelated.
+        let n = 9u128 * 100_000;
+        let vals: Vec<u128> = (0..8).map(|x| permute(x, n)).collect();
+        let mut sorted = vals.clone();
+        sorted.sort_unstable();
+        assert_ne!(vals, sorted, "consecutive counters still ascend: {vals:?}");
+        // and they are not all crowded into the bottom of the space
+        assert!(vals.iter().any(|v| *v > n / 2), "{vals:?}");
+    }
+
+    #[test]
+    fn rotation_no_longer_looks_like_a_counter() {
+        let s = state(3, 1, 0, &["483920", "771045"]);
+        let ids: Vec<String> = (0..6).map(|o| s.render(&Policy::Keep, "483920", at(o * 3)).unwrap()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_ne!(ids, sorted, "identities still march upwards: {ids:?}");
+        for id in &ids {
+            assert_eq!(id.len(), 6);
+            assert!(id.chars().all(|c| c.is_ascii_digit()));
+        }
     }
 
     // ---- window scope: the cross-sourcetype tickbox -----------------------
@@ -933,5 +1030,33 @@ mod tests {
             state.render(&policy_of(&row["widen"]), text, Position::new(0, window as i64)).as_deref(),
             row["out"].as_str()
         );
+    }
+
+    #[test]
+    fn the_permutation_matches_the_reference_vectors() {
+        for entry in vectors()["permute"].as_array().unwrap() {
+            let x: u128 = entry["x"].as_str().unwrap().parse().unwrap();
+            let size: u128 = entry["size"].as_str().unwrap().parse().unwrap();
+            let want: u128 = entry["out"].as_str().unwrap().parse().unwrap();
+            assert_eq!(permute(x, size), want, "{entry}");
+        }
+    }
+
+    #[test]
+    fn pass_rotation_matches_the_reference_vectors() {
+        // The composition the engine actually performs: counter, permute,
+        // render. A mismatch here means two workers of different builds would
+        // mint overlapping identities, which no property test would reveal.
+        let rows = vectors()["pass_render"].as_array().unwrap().clone();
+        assert!(rows.len() > 50, "only {} vectors", rows.len());
+        for entry in &rows {
+            let text = entry["text"].as_str().unwrap();
+            let policy = policy_of(&entry["widen"]);
+            let format = policy.format_for(text);
+            let num = |k: &str| -> u64 { entry[k].as_str().unwrap().parse().unwrap() };
+            let raw = ident(num("pass"), num("workers"), num("slot"), num("distinct"), num("k"));
+            let got = format::render(&format, permute(raw, format::space(&format)), format::case_class(text));
+            assert_eq!(got.as_deref(), entry["out"].as_str(), "{entry}");
+        }
     }
 }
