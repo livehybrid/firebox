@@ -540,3 +540,56 @@ fn a_restart_does_not_resend_an_identity() {
     let third: std::collections::HashSet<String> = forced.iter().map(|l| field(l, "user=")).collect();
     assert!(third.is_disjoint(&before));
 }
+
+#[test]
+fn backfill_sweeps_a_bounded_range_in_order() {
+    // The sweep is what makes a backfill fill its window rather than scatter
+    // across it: every past interval is generated in turn with its own
+    // timestamp window. `backfillEnd` bounds the far side so a range that ended
+    // in the past ("January to April") stops there, and `backfillOnly` stops
+    // the engine instead of carrying on live the moment it catches up.
+    let dir = tmpdir("backfill-range");
+    let pack = fixtures().join("flatline");
+    let conf = rewrite(&pack, &dir, 10, &[("backfill", "-80s"), ("backfillEnd", "-60s"), ("backfillOnly", "true")]);
+    let sock = dir.join("out.sock");
+    let sink = Sink::start(sock.clone());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    // One generator thread so the socket order IS the sweep order; the duration
+    // is a backstop that backfillOnly should beat by a wide margin.
+    let out = run(&conf, &pack, &sock, 60.0, &["--threads", "1"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let events = sink.events();
+    // 20 one-second intervals at 10 events each, and not one event more: a
+    // sweep that ran on to now would be four times this and climbing.
+    assert_eq!(events.len(), 200, "{} event(s)", events.len());
+    let times: Vec<i64> = events.iter().map(|e| e["time"].as_i64().unwrap()).collect();
+    // Slack on both ends: `now` here is taken before the process starts, and an
+    // event time is drawn from [et, lt] INCLUSIVE, so one interval spans two
+    // whole seconds.
+    for t in &times {
+        assert!(*t >= now - 83 && *t <= now - 58, "{} is outside the requested range", t);
+    }
+    assert!(times.windows(2).all(|w| w[1] >= w[0] - 1), "the sweep was not in order: {:?}", &times[..20]);
+    // The real claim: it STARTS at the beginning of the range and walks to the
+    // end, rather than scattering across the whole thing from the first event.
+    assert!(times[0] <= now - 77, "the sweep began at {} rather than the range start", times[0]);
+    let last = *times.last().unwrap();
+    assert!(last >= now - 63, "the sweep ended at {} rather than the range end", last);
+    let seconds: std::collections::BTreeSet<i64> = times.iter().copied().collect();
+    assert!((20..=21).contains(&seconds.len()), "covered {} second(s) of a 20 second range", seconds.len());
+}
+
+#[test]
+fn backfill_end_after_the_start_is_an_empty_sweep() {
+    // A range whose end is before its start generates nothing and says so,
+    // rather than silently sweeping to now.
+    let dir = tmpdir("backfill-empty");
+    let pack = fixtures().join("flatline");
+    let conf = rewrite(&pack, &dir, 10, &[("backfill", "-60s"), ("backfillEnd", "-80s"), ("backfillOnly", "true")]);
+    let sock = dir.join("out.sock");
+    let sink = Sink::start(sock.clone());
+    let out = run(&conf, &pack, &sock, 20.0, &["--threads", "1"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(sink.events().is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("empty range"), "{}", String::from_utf8_lossy(&out.stderr));
+}

@@ -128,7 +128,8 @@ rotate at `fileMaxBytes` keeping `fileBackupFiles` numbered backups.
 | replay `_time` | naive local time treated as UTC (off by the TZ offset) | correct local epoch |
 | `@q` snap | `floor(month/3.3+1)*3` (wrong for every month) | the calendar quarter start |
 | relative `earliest`/`latest` | parsed once and frozen as an offset from first use | re-evaluated each interval |
-| `backfill` rater | non-functional in the vendored tree (0 events) | generates every past interval, then continues live |
+| `backfill` rater | non-functional in the vendored tree (0 events) | generates every past interval in order, then continues live |
+| `backfillEnd` / `backfillOnly` | absent: a backfill always runs up to now, then live | a firebox extension: bound the far end of the range, and stop when the sweep reaches it |
 | replay after a backfill | first live event stamped at the backfill horizon | stamped now |
 | perdayvolume size ratio | recomputed every interval | computed once at load |
 | perdayvolume byte counting | Python `len()` (code points) | bytes (identical for ASCII) |

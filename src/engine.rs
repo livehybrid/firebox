@@ -107,6 +107,14 @@ pub struct Sample {
     pub time_multiple: f64,
     pub end: End,
     pub backfill: Option<String>,
+    /// `backfillEnd`: where the sweep stops, default `now`. With this set a
+    /// backfill covers an arbitrary historical range instead of only "the last
+    /// N", which is what a January-to-April backfill needs.
+    pub backfill_end: Option<String>,
+    /// `backfillOnly`: stop once the sweep reaches the end of the range rather
+    /// than carrying on live. A bounded range must not start stamping
+    /// present-time events the moment it finishes.
+    pub backfill_only: bool,
     pub batch: usize,
     pub output: Arc<dyn Output>,
     pub counter: Option<CounterSettings>,
@@ -269,6 +277,8 @@ impl Sample {
             time_multiple: conf.get_f64("timeMultiple").unwrap_or(1.0),
             end,
             backfill: conf.get("backfill").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string),
+            backfill_end: conf.get("backfillEnd").map(str::trim).filter(|v| !v.is_empty()).map(str::to_string),
+            backfill_only: conf.get_bool("backfillOnly").unwrap_or(false),
             batch,
             output,
             counter,
@@ -650,8 +660,12 @@ fn timer_loop(
             gen::replay::run_replay(&s, w.as_mut(), &mut rng, &stop, &stats, &mut backfill_done)?;
             w.flush()?;
         } else if s.backfill.is_some() && !backfill_done {
-            backfill_sweep(&s, &tx, &mut rng, &mut pdv, now, &stats)?;
+            backfill_sweep(&s, &tx, &mut rng, &mut pdv, now, &stats, &stop)?;
             backfill_done = true;
+            if s.backfill_only {
+                log::info!("backfill complete for sample '{}'; backfillOnly is set, so not continuing live", s.name);
+                break;
+            }
         } else {
             let (et, lt) = s.window(now)?;
             let deadline = Some(fire + interval.max(Duration::from_secs(1)));
@@ -732,8 +746,13 @@ fn timer_loop(
     Ok(())
 }
 
-/// `backfill = -1h`: generate every interval from then until now, each with its
-/// own window and (rate-map) time, then carry on live.
+/// `backfill = -1h`: generate every interval from then until `backfillEnd`
+/// (default now), each with its own window and (rate-map) time, in order, then
+/// carry on live unless `backfillOnly` is set.
+///
+/// Sweeping in order is the point: the window fills from its start rather than
+/// being scattered uniformly, so a run that is cut short leaves a shorter but
+/// complete history instead of a sparse smear across the whole range.
 fn backfill_sweep(
     s: &Arc<Sample>,
     tx: &Sender<Job>,
@@ -741,14 +760,32 @@ fn backfill_sweep(
     pdv: &mut Option<PerDayVolumeRater>,
     now: NaiveDateTime,
     stats: &Stats,
+    stop: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let spec = s.backfill.as_deref().unwrap_or("now");
     let mut t = timeparse::parse_time(spec, now).map_err(|e| anyhow::anyhow!("backfill '{}': {}", spec, e))?;
+    let until = match s.backfill_end.as_deref() {
+        None => now,
+        Some(v) => timeparse::parse_time(v, now).map_err(|e| anyhow::anyhow!("backfillEnd '{}': {}", v, e))?,
+    };
+    if t >= until {
+        log::warn!("backfill for sample '{}' is an empty range ({} to {}); nothing to sweep", s.name, t, until);
+        return Ok(());
+    }
     let step = chrono::Duration::seconds(s.interval.max(1));
     let mut intervals = 0u64;
-    while t < now {
+    log::info!("backfill for sample '{}': sweeping {} to {} in {}s steps", s.name, t, until, s.interval.max(1));
+    while t < until {
+        // The sweep holds the timer thread for the whole range, so it has to
+        // honour the stop flag itself; a disconnected channel is not the only
+        // way a run ends (a duration bound raises this instead).
+        if stop.load(Ordering::Relaxed) {
+            log::info!("backfill for sample '{}' stopped at {} after {} interval(s)", s.name, t, intervals);
+            break;
+        }
         let et = t;
-        let lt = t + step;
+        // Clamp so the last step cannot stamp an event past the range end.
+        let lt = (t + step).min(until);
         let ts = s.ts(&t);
         let factor =
             s.randomize_count.map(|rc| randomize_count_factor(rc, rng)).unwrap_or(1.0) * s.rate_maps.factor(&ts);
@@ -786,7 +823,7 @@ fn backfill_sweep(
         intervals += 1;
         t = lt;
     }
-    log::info!("backfill for sample '{}': queued {} interval(s) back to {}", s.name, intervals, spec);
+    log::info!("backfill for sample '{}': queued {} interval(s) from {}", s.name, intervals, spec);
     stats.intervals.fetch_add(intervals, Ordering::Relaxed);
     Ok(())
 }

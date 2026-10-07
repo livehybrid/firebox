@@ -379,6 +379,7 @@ pub fn load(conf_path: &Path, opts: &LoadOptions) -> anyhow::Result<Conf> {
         if let Some(c) = opts.override_count {
             s.set("count", &c.to_string());
             s.remove("backfill");
+            s.remove("backfillEnd");
         }
         if let Some(i) = opts.override_interval {
             s.set("interval", &i.to_string());

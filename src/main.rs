@@ -296,6 +296,8 @@ fn run_validate(a: ValidateArgs) -> i32 {
             "randomizeCount",
             "end",
             "backfill",
+            "backfillEnd",
+            "backfillOnly",
             "index",
             "sourcetype",
             "source",
@@ -367,6 +369,7 @@ fn run_bench(a: BenchArgs) -> i32 {
                     s.remove("randomizeCount");
                 }
                 s.remove("backfill");
+                s.remove("backfillEnd");
                 s.remove("end");
                 s.remove("delay");
             }

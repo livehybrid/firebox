@@ -48,7 +48,11 @@ firebox bench path/to/default/eventgen.conf --seconds 5
   `dayOfWeekRate`, `minuteOfHourRate`, `dayOfMonthRate`, `monthOfYearRate`),
   `perdayvolume` (with the token-size correction and interval carry),
   `backfill` (which actually works: every past interval is generated with its
-  own window and rate-map time).
+  own window and rate-map time, in order from the start of the range, so the
+  window fills rather than being scattered across). Two extensions bound it:
+  `backfillEnd` stops the sweep somewhere in the past rather than at now, which
+  is what an arbitrary historical range needs, and `backfillOnly` ends the
+  stanza there instead of carrying on live.
 - **Tokens**: `static`, `timestamp`, `replaytimestamp`, `random` and `rated`
   (`ipv4`, `ipv6`, `mac`, `guid`, `integer[a:b]`, `float[a:b]`, `string(n)`,
   `hex(n)`, `list[...]`), `file`, `mvfile` (`path:column`), `seqfile`,
