@@ -58,12 +58,17 @@ pub const VALID_REPLACEMENT_TYPES: &[&str] =
 /// Settings that are never inherited from another stanza during flattening.
 const NON_FLATTEN_KEYS: &[&str] = &["eai:acl", "blacklist", "disabled", "name"];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TokenSpec {
     pub index: usize,
     pub token: String,
     pub replacement_type: String,
     pub replacement: String,
+    /// `offsetMin` / `offsetMax` (a firebox and Stoker extension): shift a
+    /// timestamp token away from the event time. Kept raw so `validate` can
+    /// report a bad value; [`crate::token::TsOffset::parse`] reads them.
+    pub offset_min: Option<String>,
+    pub offset_max: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -481,7 +486,7 @@ fn resolve_sample_dir(setting: Option<&String>, conf_dir: &Path, default: &Path)
 /// Collect `token.N.token|replacementType|replacement` into ordered specs,
 /// dropping incomplete or invalid ones the way upstream does.
 fn parse_tokens(stanza: &str, items: &[(String, String)]) -> Vec<TokenSpec> {
-    type Partial = (Option<String>, Option<String>, Option<String>);
+    type Partial = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
     let mut partial: HashMap<usize, Partial> = HashMap::new();
     for (k, v) in items {
         let Some(rest) = k.strip_prefix("token.") else { continue };
@@ -503,6 +508,8 @@ fn parse_tokens(stanza: &str, items: &[(String, String)]) -> Vec<TokenSpec> {
                 entry.1 = Some(v.trim().to_string());
             }
             "replacement" => entry.2 = Some(v.clone()),
+            "offsetMin" => entry.3 = Some(v.trim().to_string()),
+            "offsetMax" => entry.4 = Some(v.trim().to_string()),
             other => log::error!("Could not parse token index '{}' token type '{}' in stanza '{}'", idx, other, stanza),
         }
     }
@@ -510,10 +517,10 @@ fn parse_tokens(stanza: &str, items: &[(String, String)]) -> Vec<TokenSpec> {
     indices.sort_unstable();
     let mut out = Vec::new();
     for idx in indices {
-        let (t, rt, r) = partial.remove(&idx).unwrap();
+        let (t, rt, r, offset_min, offset_max) = partial.remove(&idx).unwrap();
         match (t, rt, r) {
             (Some(token), Some(replacement_type), Some(replacement)) => {
-                out.push(TokenSpec { index: idx, token, replacement_type, replacement })
+                out.push(TokenSpec { index: idx, token, replacement_type, replacement, offset_min, offset_max })
             }
             _ => log::error!("Token at index {} invalid in stanza '{}'", idx, stanza),
         }
@@ -534,6 +541,27 @@ mod tests {
             fs::write(dir.join("samples").join(name), body).unwrap();
         }
         dir.join("default/eventgen.conf")
+    }
+
+    #[test]
+    fn token_offsets_are_collected() {
+        let items: Vec<(String, String)> = [
+            ("token.0.token", "T"),
+            ("token.0.replacementType", "timestamp"),
+            ("token.0.replacement", "%s"),
+            ("token.0.offsetMin", " -5m "),
+            ("token.0.offsetMax", "10m"),
+            ("token.1.token", "U"),
+            ("token.1.replacementType", "timestamp"),
+            ("token.1.replacement", "%s"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let t = parse_tokens("s", &items);
+        assert_eq!(t[0].offset_min.as_deref(), Some("-5m"));
+        assert_eq!(t[0].offset_max.as_deref(), Some("10m"));
+        assert_eq!((t[1].offset_min.clone(), t[1].offset_max.clone()), (None, None));
     }
 
     #[test]

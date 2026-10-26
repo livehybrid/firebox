@@ -57,6 +57,13 @@ firebox bench path/to/default/eventgen.conf --seconds 5
   (`ipv4`, `ipv6`, `mac`, `guid`, `integer[a:b]`, `float[a:b]`, `string(n)`,
   `hex(n)`, `list[...]`), `file`, `mvfile` (`path:column`), `seqfile`,
   `integerid` (with state files), `host.token`/`host.replacement`.
+- **Relative timestamps** (`token.N.offsetMin` / `token.N.offsetMax`, a
+  firebox and Stoker extension): shift a `timestamp` or `replaytimestamp`
+  token away from the event time, so one event can carry, say, a login time
+  ten minutes before the event itself. Values are `-30s`, `5m`, `2h` or bare
+  seconds; negative means before the event. Equal bounds (or only one set) is
+  a fixed shift; otherwise each event draws a uniform shift from the range,
+  shared by every match of that token in the event. Unset, nothing changes.
 - **Identity rotation** (`rotate`, a firebox and Stoker extension, not in
   upstream eventgen): mints a new identity for every pass over the sample, in
   the format of the value it replaces, so a replayed journey is a different

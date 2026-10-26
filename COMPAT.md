@@ -41,6 +41,17 @@ upstream equivalent and is documented below. `timestamp` needs
 `lt >= et` and a format with at least one conversion. `rated` multiplies an
 integer/float by the hour-of-day and day-of-week maps (Sunday = 0).
 
+**Relative timestamps (`offsetMin` / `offsetMax`).** A firebox and Stoker
+extension on `timestamp` and `replaytimestamp` tokens. The shift is applied to
+the rendered value only: the event's own time (pivot, replay time, `_time`),
+replay-mode timestamp extraction and the rate maps are untouched. A range is
+drawn once per token per event from the seeded generator, so `--seed` stays
+reproducible. A bad value, `offsetMin > offsetMax`, or the keys on a
+non-timestamp token are reported by `validate` and logged at start, and the
+token renders as if they were absent. Upstream eventgen logs the keys as an
+unparseable token field and ignores them, so such a pack still runs there,
+without the shift.
+
 **Identity rotation (`rotate`).** A firebox and Stoker extension, so a pack
 using it is not portable to upstream eventgen, which drops an unknown
 `replacementType` and emits the matched text verbatim. That degradation is
