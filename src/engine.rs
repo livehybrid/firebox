@@ -204,6 +204,7 @@ impl Sample {
                     token: tok.clone(),
                     replacement_type: "file".into(),
                     replacement: rep.clone(),
+                    ..Default::default()
                 };
                 Some(
                     Token::compile(&spec, &cwd, &conf.sample_dir, 0)

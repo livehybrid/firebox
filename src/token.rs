@@ -148,6 +148,66 @@ pub struct Token {
     pub rx: Rx,
     pub kind: Kind,
     pub spec: TokenSpec,
+    /// Shift applied to a `timestamp`/`replaytimestamp` value; None leaves it
+    /// at the event time.
+    pub offset: Option<TsOffset>,
+}
+
+/// `offsetMin`/`offsetMax`: a signed shift, in seconds, from the event time
+/// (negative = before). Equal bounds are a fixed shift; otherwise each event
+/// draws one uniformly from the inclusive range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TsOffset {
+    pub min: i64,
+    pub max: i64,
+}
+
+impl TsOffset {
+    /// Read a spec's offset keys. Only one set means a fixed shift by it.
+    pub fn parse(spec: &TokenSpec) -> Result<Option<TsOffset>, String> {
+        let min = spec.offset_min.as_deref().map(parse_offset).transpose()?;
+        let max = spec.offset_max.as_deref().map(parse_offset).transpose()?;
+        let (min, max) = match (min, max) {
+            (None, None) => return Ok(None),
+            (Some(a), None) | (None, Some(a)) => (a, a),
+            (Some(a), Some(b)) => (a, b),
+        };
+        if min > max {
+            return Err(format!("offsetMin ({}s) is greater than offsetMax ({}s)", min, max));
+        }
+        Ok(Some(TsOffset { min, max }))
+    }
+
+    fn draw(&self, rng: &mut SmallRng) -> i64 {
+        if self.max > self.min {
+            rng.random_range(self.min..=self.max)
+        } else {
+            self.min
+        }
+    }
+}
+
+/// `-30s`, `5m`, `+2h`, or a bare number of seconds.
+fn parse_offset(text: &str) -> Result<i64, String> {
+    let t = text.trim();
+    let bad = || format!("cannot parse offset '{}' (expected e.g. -30s, 5m, 2h)", text);
+    let (sign, body) = match t.as_bytes().first() {
+        Some(b'-') => (-1, &t[1..]),
+        Some(b'+') => (1, &t[1..]),
+        _ => (1, t),
+    };
+    let (digits, scale) = match body.as_bytes().last().map(u8::to_ascii_lowercase) {
+        Some(b's') => (&body[..body.len() - 1], 1),
+        Some(b'm') => (&body[..body.len() - 1], 60),
+        Some(b'h') => (&body[..body.len() - 1], 3600),
+        _ => (body, 1),
+    };
+    let digits = digits.trim();
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let n: i64 = digits.parse().map_err(|_| bad())?;
+    n.checked_mul(scale).map(|v| v * sign).ok_or_else(bad)
 }
 
 /// Build a stanza's rotation identity tables from its own sample.
@@ -350,7 +410,18 @@ impl Token {
                 spec.replacement_type
             );
         }
-        Ok(Token { rx, kind, spec: spec.clone() })
+        let offset = if matches!(kind, Kind::Timestamp(_) | Kind::ReplayTimestamp(_)) {
+            TsOffset::parse(spec).unwrap_or_else(|e| {
+                log::error!("token {}: {}; rendering without an offset", spec.index, e);
+                None
+            })
+        } else {
+            if spec.offset_min.is_some() || spec.offset_max.is_some() {
+                log::error!("token {}: offsetMin/offsetMax only apply to timestamp tokens; ignoring", spec.index);
+            }
+            None
+        };
+        Ok(Token { rx, kind, spec: spec.clone(), offset })
     }
 
     pub fn is_timestamp(&self) -> bool {
@@ -403,7 +474,8 @@ impl Token {
             }
             Kind::ReplayTimestamp(layout) => match ctx.lt {
                 Some(lt) => {
-                    layout.write_str(&mut ctx.value, &lt);
+                    let ts = self.shifted(lt, ctx);
+                    layout.write_str(&mut ctx.value, &ts);
                     true
                 }
                 None => false,
@@ -472,8 +544,20 @@ impl Token {
             Some(p) => p,
             None => lt,
         };
+        let ts = self.shifted(ts, ctx);
         layout.write_str(&mut ctx.value, &ts);
         true
+    }
+
+    /// The event time moved by this token's offset, if it has one. Drawn
+    /// once per call, so every match in the event shares it.
+    fn shifted(&self, ts: Ts, ctx: &mut EventCtx<'_>) -> Ts {
+        let Some(off) = &self.offset else { return ts };
+        let delta = off.draw(ctx.rng);
+        if delta == 0 {
+            return ts;
+        }
+        Ts::from_epoch(ts.epoch.saturating_add(delta), ts.micro).unwrap_or(ts)
     }
 }
 
@@ -748,7 +832,13 @@ mod tests {
     }
 
     fn spec(token: &str, kind: &str, rep: &str) -> TokenSpec {
-        TokenSpec { index: 0, token: token.into(), replacement_type: kind.into(), replacement: rep.into() }
+        TokenSpec {
+            index: 0,
+            token: token.into(),
+            replacement_type: kind.into(),
+            replacement: rep.into(),
+            ..Default::default()
+        }
     }
 
     fn tok(token: &str, kind: &str, rep: &str) -> Token {
@@ -811,6 +901,67 @@ mod tests {
         let mut e = "XX".to_string();
         assert!(!t.replace(&mut e, &mut c));
         assert_eq!(e, "XX");
+    }
+
+    fn offset_tok(kind: &str, min: Option<&str>, max: Option<&str>) -> Token {
+        let mut sp = spec("TS", kind, "%s");
+        sp.offset_min = min.map(Into::into);
+        sp.offset_max = max.map(Into::into);
+        Token::compile(&sp, Path::new("/"), Path::new("/tmp"), 0).unwrap()
+    }
+
+    fn render(t: &Token, c: &mut EventCtx<'_>) -> i64 {
+        let mut e = "TS".to_string();
+        assert!(t.replace(&mut e, c));
+        e.parse().unwrap()
+    }
+
+    #[test]
+    fn offset_parsing() {
+        for (text, want) in [("30", 30), ("-30s", -30), ("+5m", 300), ("2h", 7200), ("-1H", -3600), (" 0 ", 0)] {
+            assert_eq!(parse_offset(text), Ok(want), "{}", text);
+        }
+        for text in ["", "-", "m", "5d", "1.5m", "--5s", "abc"] {
+            assert!(parse_offset(text).is_err(), "{}", text);
+        }
+        let mut sp = spec("x", "timestamp", "%s");
+        assert_eq!(TsOffset::parse(&sp), Ok(None));
+        sp.offset_max = Some("-10m".into());
+        assert_eq!(TsOffset::parse(&sp), Ok(Some(TsOffset { min: -600, max: -600 })));
+        sp.offset_min = Some("1m".into());
+        assert!(TsOffset::parse(&sp).is_err());
+    }
+
+    #[test]
+    fn timestamp_offset_fixed_and_ranged() {
+        let mut rng = SmallRng::seed_from_u64(11);
+        let maps = RateMaps::default();
+        let mut c = ctx(&mut rng, &maps);
+        let base = c.pivot.unwrap().epoch;
+        assert_eq!(render(&offset_tok("timestamp", None, None), &mut c), base);
+        assert_eq!(render(&offset_tok("timestamp", Some("-90s"), Some("-90s")), &mut c), base - 90);
+        assert_eq!(render(&offset_tok("replaytimestamp", Some("2h"), None), &mut c), base + 7200);
+        let t = offset_tok("timestamp", Some("-5m"), Some("10m"));
+        let seen: Vec<i64> = (0..200).map(|_| render(&t, &mut c) - base).collect();
+        assert!(seen.iter().all(|d| (-300..=600).contains(d)));
+        assert!(seen.iter().any(|d| *d < 0) && seen.iter().any(|d| *d > 0));
+        // a bad range renders at the event time rather than not at all
+        assert_eq!(render(&offset_tok("timestamp", Some("1h"), Some("1m")), &mut c), base);
+    }
+
+    #[test]
+    fn timestamp_offset_shared_across_matches() {
+        let mut rng = SmallRng::seed_from_u64(5);
+        let maps = RateMaps::default();
+        let mut c = ctx(&mut rng, &maps);
+        let mut sp = spec(r"T\d", "timestamp", "%s");
+        sp.offset_min = Some("-1h".into());
+        sp.offset_max = Some("1h".into());
+        let t = Token::compile(&sp, Path::new("/"), Path::new("/tmp"), 0).unwrap();
+        let mut e = "T1 T2".to_string();
+        t.replace(&mut e, &mut c);
+        let parts: Vec<&str> = e.split(' ').collect();
+        assert_eq!(parts[0], parts[1]);
     }
 
     #[test]

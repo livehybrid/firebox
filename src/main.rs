@@ -319,6 +319,22 @@ fn run_validate(a: ValidateArgs) -> i32 {
                 }
             };
             println!("  token.{}: {} => {} '{}'  [{}]", t.index, t.token, t.replacement_type, t.replacement, status);
+            if t.offset_min.is_some() || t.offset_max.is_some() {
+                let is_ts = matches!(t.replacement_type.as_str(), "timestamp" | "replaytimestamp");
+                let line = match firebox::token::TsOffset::parse(t) {
+                    Ok(Some(o)) if is_ts && o.min == o.max => format!("{}s", o.min),
+                    Ok(Some(o)) if is_ts => format!("{}s..{}s (random per event)", o.min, o.max),
+                    Ok(_) => {
+                        problems += 1;
+                        "ERROR offsetMin/offsetMax only apply to timestamp tokens".to_string()
+                    }
+                    Err(e) => {
+                        problems += 1;
+                        format!("ERROR {}", e)
+                    }
+                };
+                println!("    offset: {}", line);
+            }
         }
         if let Some(p) = &s.file_path {
             match firebox::sample::load_raw(p, s.get("breaker").unwrap_or(firebox::sample::DEFAULT_BREAKER)) {
