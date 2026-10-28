@@ -96,6 +96,7 @@ fn render(
     ctx: &mut EventCtx<'_>,
     locals: &mut [RxLocal],
     host_local: &mut Option<RxLocal>,
+    present: &mut Vec<bool>,
 ) -> EventOut {
     let line = &s.data.lines[rl.idx];
     ctx.begin_event();
@@ -104,9 +105,7 @@ fn render(
     ctx.et = Some(ts);
     ctx.lt = Some(ts);
     let mut raw = line.raw.clone();
-    for (t, l) in s.tokens.iter().zip(locals.iter_mut()) {
-        t.replace_local(&mut raw, ctx, l);
-    }
+    crate::prefilter::apply_tokens(&s.tokens, locals, s.token_prefilter.as_ref(), present, &mut raw, ctx);
     let mut meta = line.meta.clone().unwrap_or_else(|| s.meta.clone());
     if let (Some(ht), Some(hl)) = (&s.host_token, host_local.as_mut()) {
         let mut h: String = meta.host.as_deref().unwrap_or("").to_string();
@@ -157,6 +156,7 @@ pub fn run_replay(
     let maps = &s.rate_maps;
     let mut ctx = EventCtx::new(rng, now_ts, maps);
     let mut locals: Vec<RxLocal> = s.tokens.iter().map(|t| RxLocal::new(&t.rx)).collect();
+    let mut present: Vec<bool> = Vec::new();
     let mut host_local = s.host_token.as_ref().map(|t| RxLocal::new(&t.rx));
     let mut batch: Vec<EventOut> = Vec::new();
     let flush = |batch: &mut Vec<EventOut>, writer: &mut dyn Writer| -> anyhow::Result<()> {
@@ -182,7 +182,7 @@ pub fn run_replay(
                     while t >= horizon {
                         let rl = &lines[idx];
                         t -= chrono::Duration::microseconds((rl.diff * 1e6) as i64);
-                        events.push(render(s, rl, &t, &mut ctx, &mut locals, &mut host_local));
+                        events.push(render(s, rl, &t, &mut ctx, &mut locals, &mut host_local, &mut present));
                         if idx == 0 {
                             idx = lines.len() - 1;
                         } else {
@@ -225,7 +225,7 @@ pub fn run_replay(
             }
         }
         let event_time = s.now();
-        batch.push(render(s, rl, &event_time, &mut ctx, &mut locals, &mut host_local));
+        batch.push(render(s, rl, &event_time, &mut ctx, &mut locals, &mut host_local, &mut present));
         if batch.len() >= 512 {
             flush(&mut batch, writer)?;
         }

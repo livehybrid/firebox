@@ -25,6 +25,10 @@ memchr = "2"
 parking_lot = "0.12"
 rand = { version = "0.9", features = ["small_rng"] }
 regex = "1"
+# The token prefilter (src/prefilter.rs): pattern prefixes from the same
+# parser the regex crate uses, and one pass over the event for all of them.
+regex-syntax = "0.8"
+aho-corasick = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = "0.3"
