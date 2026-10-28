@@ -83,6 +83,9 @@ pub struct Sample {
     pub name: String,
     pub data: SampleData,
     pub tokens: Vec<Token>,
+    /// Which tokens can be skipped for an event, when enough of them can be
+    /// for it to pay; see [`crate::prefilter`].
+    pub token_prefilter: Option<crate::prefilter::TokenPrefilter>,
     /// Identity rotation state, shared by every `rotate` token in the stanza,
     /// or None when the stanza does not rotate.
     pub rotation: Option<Arc<rotate::State>>,
@@ -285,6 +288,7 @@ impl Sample {
             counter,
             replay_lines: Vec::new(),
             data,
+            token_prefilter: crate::prefilter::TokenPrefilter::build(&tokens),
             tokens,
             rotation,
             host_token,
@@ -839,6 +843,8 @@ struct WorkerState {
     ts_cache: Box<[Option<(i64, Ts)>; 256]>,
     /// Per-sample regex handles owned by this thread: (sample key, tokens, host token).
     rx_local: Vec<(usize, Vec<RxLocal>, Option<RxLocal>)>,
+    /// Scratch for the token prefilter: which tokens can match this event.
+    present: Vec<bool>,
 }
 
 impl WorkerState {
@@ -882,6 +888,7 @@ fn worker_loop(
         pool: Vec::with_capacity(CHUNK_EVENTS),
         ts_cache: Box::new([None; 256]),
         rx_local: Vec::new(),
+        present: Vec::new(),
     };
     for job in rx.iter() {
         if stop.load(Ordering::Relaxed) {
@@ -928,7 +935,7 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
     let mut bytes = 0u64;
     let li = st.local_rx_index(&job.sample);
     {
-        let WorkerState { rng, events, pool, ts_cache, rx_local, .. } = st;
+        let WorkerState { rng, events, pool, ts_cache, rx_local, present, .. } = st;
         let (_, tok_rx, host_rx) = &mut rx_local[li];
         let mut ctx = EventCtx::new(rng, job.now, &s.rate_maps);
         ctx.et = Some(et);
@@ -969,9 +976,7 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
             let mut raw = pool.pop().unwrap_or_default();
             raw.clear();
             raw.push_str(&line.raw);
-            for (t, l) in s.tokens.iter().zip(tok_rx.iter_mut()) {
-                t.replace_local(&mut raw, ctx, l);
-            }
+            crate::prefilter::apply_tokens(&s.tokens, tok_rx, s.token_prefilter.as_ref(), present, &mut raw, ctx);
             let mut meta = match &line.meta {
                 Some(m) => match &batch_index {
                     Some(idx) => Arc::new(Meta {

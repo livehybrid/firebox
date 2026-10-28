@@ -13,6 +13,7 @@ pub mod format;
 pub mod gen;
 pub mod ini;
 pub mod output;
+pub mod prefilter;
 pub mod pyre;
 pub mod rate;
 pub mod rotate;
