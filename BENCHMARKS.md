@@ -94,3 +94,35 @@ threads for the GIL and the HEC queue pins at its 5,000 cap:
 | single shared | 4,781 | 100% |
 
 Hence `--connections single` is the default.
+
+## Precompiled line templates (2026-11-02)
+
+Even with the token prefilter, each token present in an event ran a regex
+search over the whole event and rebuilt it to splice its value in; on a pack
+builder pack that was ~70% of generation time (callgrind). Each sample line is
+now precompiled at load into literal ranges and value slots, and an event is
+written in one pass with no regex (`src/template.rs`). Output under a fixed
+seed is unchanged: the load-time check renders lines both ways and compares.
+
+`firebox bench`, one thread, 4-core container. Synthetic packs use generated
+JSON keys and values with the pack builder's `"key"\s*:\s*"([^"]*)"` patterns.
+
+| pack | event size | before (eps) | after (eps) | speed-up |
+|---|---|---|---|---|
+| synthetic, 40 tokens, 40 per event | 1.0 KB | 15,613 | 190,210 | 12x |
+| synthetic, 1,700 tokens, 40 per event | 1.1 KB | 1,854 | 147,630 | 80x |
+| synthetic, 1,700 tokens, 400 per event | 10.3 KB | 132 | 14,422 | 109x |
+| synthetic, 1,700 tokens, 1,700 per event | 43.8 KB | 25 | 3,273 | 131x |
+| fixture `aws-cloudtrail` | | 228,447 | 856,606 | 3.7x |
+| fixture `apigw` | | 433,410 | 1,051,728 | 2.4x |
+| fixture `web-access` | | 633,546 | 1,903,812 | 3.0x |
+| fixture `splunk-tutorial-secure` | | 757,406 | 1,904,170 | 2.5x |
+| fixture `nginx-access` | | 668,436 | 1,631,184 | 2.4x |
+
+Four threads on the 1,700-token, 40-per-event pack: 8,291 to 495,129 eps.
+Generation now runs at roughly 150 to 190 MB/s per thread whatever the token
+count; what is left is computing the values themselves.
+
+Load time grows by the template build (spread across cores) plus at most
+250 ms of checking: 340 to 463 ms for the 40-line synthetic pack, 1.0 to 1.5 s
+for a 5,000-line one.

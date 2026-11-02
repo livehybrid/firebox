@@ -89,6 +89,7 @@ fn time_val(dt: &NaiveDateTime) -> TimeVal {
     TimeVal::Float(ts.epoch as f64 + ts.micro as f64 / 1e6)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render(
     s: &Sample,
     rl: &ReplayLine,
@@ -97,6 +98,7 @@ fn render(
     locals: &mut [RxLocal],
     host_local: &mut Option<RxLocal>,
     present: &mut Vec<bool>,
+    tpl: &mut crate::template::Scratch,
 ) -> EventOut {
     let line = &s.data.lines[rl.idx];
     ctx.begin_event();
@@ -104,8 +106,19 @@ fn render(
     ctx.pivot = None;
     ctx.et = Some(ts);
     ctx.lt = Some(ts);
-    let mut raw = line.raw.clone();
-    crate::prefilter::apply_tokens(&s.tokens, locals, s.token_prefilter.as_ref(), present, &mut raw, ctx);
+    let mut raw = String::with_capacity(line.raw.len() + 64);
+    crate::template::render_line(
+        &s.tokens,
+        s.templates.as_ref(),
+        rl.idx,
+        &line.raw,
+        locals,
+        s.token_prefilter.as_ref(),
+        present,
+        tpl,
+        &mut raw,
+        ctx,
+    );
     let mut meta = line.meta.clone().unwrap_or_else(|| s.meta.clone());
     if let (Some(ht), Some(hl)) = (&s.host_token, host_local.as_mut()) {
         let mut h: String = meta.host.as_deref().unwrap_or("").to_string();
@@ -157,6 +170,7 @@ pub fn run_replay(
     let mut ctx = EventCtx::new(rng, now_ts, maps);
     let mut locals: Vec<RxLocal> = s.tokens.iter().map(|t| RxLocal::new(&t.rx)).collect();
     let mut present: Vec<bool> = Vec::new();
+    let mut tpl = crate::template::Scratch::default();
     let mut host_local = s.host_token.as_ref().map(|t| RxLocal::new(&t.rx));
     let mut batch: Vec<EventOut> = Vec::new();
     let flush = |batch: &mut Vec<EventOut>, writer: &mut dyn Writer| -> anyhow::Result<()> {
@@ -182,7 +196,7 @@ pub fn run_replay(
                     while t >= horizon {
                         let rl = &lines[idx];
                         t -= chrono::Duration::microseconds((rl.diff * 1e6) as i64);
-                        events.push(render(s, rl, &t, &mut ctx, &mut locals, &mut host_local, &mut present));
+                        events.push(render(s, rl, &t, &mut ctx, &mut locals, &mut host_local, &mut present, &mut tpl));
                         if idx == 0 {
                             idx = lines.len() - 1;
                         } else {
@@ -225,7 +239,7 @@ pub fn run_replay(
             }
         }
         let event_time = s.now();
-        batch.push(render(s, rl, &event_time, &mut ctx, &mut locals, &mut host_local, &mut present));
+        batch.push(render(s, rl, &event_time, &mut ctx, &mut locals, &mut host_local, &mut present, &mut tpl));
         if batch.len() >= 512 {
             flush(&mut batch, writer)?;
         }
