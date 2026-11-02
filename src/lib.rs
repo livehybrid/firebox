@@ -20,6 +20,7 @@ pub mod rotate;
 pub mod sample;
 pub mod strftime;
 pub mod strptime;
+pub mod template;
 pub mod timeparse;
 pub mod token;
 

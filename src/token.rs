@@ -435,8 +435,27 @@ impl Token {
     /// rotate (not in the sample under `pass` scope, or no variable position)
     /// is copied through, so an unexpected value is left as the stable stand-in
     /// rather than replaced with something arbitrary.
-    fn rotate_one(args: &RotateArgs, text: &str, at: rotate::Position) -> Option<String> {
+    pub fn rotate_one(args: &RotateArgs, text: &str, at: rotate::Position) -> Option<String> {
         args.state.render(&args.policy, text, at)
+    }
+
+    /// The counter a token advances as a side effect of rendering (an
+    /// `integerid` value, a `seqfile` position), so a dry run can put it back.
+    pub fn side_state(&self) -> Option<i64> {
+        match &self.kind {
+            Kind::IntegerId(v) => Some(v.load(Ordering::Relaxed)),
+            Kind::File(f) if f.sequential => Some(f.seq_counter.load(Ordering::Relaxed) as i64),
+            _ => None,
+        }
+    }
+
+    /// Restore what [`Token::side_state`] returned.
+    pub fn set_side_state(&self, v: i64) {
+        match &self.kind {
+            Kind::IntegerId(c) => c.store(v, Ordering::Relaxed),
+            Kind::File(f) if f.sequential => f.seq_counter.store(v as usize, Ordering::Relaxed),
+            _ => {}
+        }
     }
 
     /// Persist an integerid counter the way `Sample.saveState` does.
@@ -466,8 +485,37 @@ impl Token {
         if let Kind::Rotate(args) = &self.kind {
             return rotate_spans(event, ctx, args);
         }
+        let ok = self.value_into(ctx);
+        if !ok {
+            return false; // upstream returns `old`: the text is left alone
+        }
+        let (fs, fe) = ctx.spans[0].target();
+        if ctx.spans.len() == 1 && ctx.value == event[fs..fe] {
+            return false;
+        }
+        let EventCtx { spans, scratch, value, .. } = ctx;
+        scratch.clear();
+        let mut pos = 0;
+        for sp in spans.iter() {
+            let (s, e) = sp.target();
+            if s < pos {
+                continue; // overlapping group spans cannot happen with finditer, but stay safe
+            }
+            scratch.push_str(&event[pos..s]);
+            scratch.push_str(value);
+            pos = e;
+        }
+        scratch.push_str(&event[pos..]);
+        std::mem::swap(event, scratch);
+        true
+    }
+
+    /// This token's one value for the event, written into `ctx.value`; false
+    /// leaves the matched text alone. Shared by the token path and
+    /// [`crate::template`]. Not for `rotate`, which is per match.
+    pub fn value_into(&self, ctx: &mut EventCtx<'_>) -> bool {
         ctx.value.clear();
-        let ok = match &self.kind {
+        match &self.kind {
             Kind::Static(s) => {
                 ctx.value.push_str(s);
                 true
@@ -495,29 +543,7 @@ impl Token {
             // it is if that branch is ever bypassed.
             Kind::Rotate(_) => false,
             Kind::Broken => false,
-        };
-        if !ok {
-            return false; // upstream returns `old`: the text is left alone
         }
-        let (fs, fe) = ctx.spans[0].target();
-        if ctx.spans.len() == 1 && ctx.value == event[fs..fe] {
-            return false;
-        }
-        let EventCtx { spans, scratch, value, .. } = ctx;
-        scratch.clear();
-        let mut pos = 0;
-        for sp in spans.iter() {
-            let (s, e) = sp.target();
-            if s < pos {
-                continue; // overlapping group spans cannot happen with finditer, but stay safe
-            }
-            scratch.push_str(&event[pos..s]);
-            scratch.push_str(value);
-            pos = e;
-        }
-        scratch.push_str(&event[pos..]);
-        std::mem::swap(event, scratch);
-        true
     }
 
     fn timestamp_into(&self, layout: &Layout, ctx: &mut EventCtx<'_>) -> bool {

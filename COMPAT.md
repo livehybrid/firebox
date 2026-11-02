@@ -149,6 +149,7 @@ rotate at `fileMaxBytes` keeping `fileBackupFiles` numbered backups.
 | Late intervals | the timer drifts and can burst | skipped, never bursted (a stalled sink backpressures, stale jobs are dropped) |
 | An app directory as the conf | samples resolved against the app's parent | `<app>/samples` |
 | `outputMode = modinput` | Splunk modular input stream | the same XML stream on stdout |
+| Token matching | each token searches the text earlier tokens already rewrote | each sample line is precompiled once and every token matches the original line. Identical output unless a value creates or moves another token's match (a token chain such as a static `##placeholder##` another token replaces): at load, sample lines are rendered both ways with the same seed for up to 250 ms, and any difference turns this off for the stanza with a warning. Lines where two tokens' targets overlap always keep the token-by-token path. `templates = false` (stanza) or `FIREBOX_TEMPLATES=0` restores upstream behaviour everywhere |
 
 ## Not implemented
 

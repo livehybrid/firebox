@@ -35,6 +35,7 @@ firebox bench path/to/default/eventgen.conf --seconds 5
 | `--stats S` | log throughput every S seconds |
 | `--socket PATH` / `STOKER_OUTPUT_SOCKET` | the Stoker agent socket for `outputMode = stoker` |
 | `--connections single\|per-thread` | one shared socket connection (default) or one per thread |
+| `FIREBOX_TEMPLATES=0` | turn precompiled line templates off (stanza key: `templates = false`) |
 | `-v`, `-vv` | info / debug logging on stderr (default: errors only) |
 
 ## What is supported
@@ -91,6 +92,10 @@ differences from upstream.
 ## How it is fast
 
 - Every regex and every strftime format is compiled once at load.
+- Every sample line is precompiled into literal text and value slots, so an
+  event is written in one pass with no regex at all (see `src/template.rs`).
+  Tokens match the line as it is in the sample; a line where that would give a
+  different event from eventgen's token-by-token rewrite keeps the old path.
 - Each worker thread has its own random generator and scratch buffers; no
   locks on the hot path. Output is encoded and written once per batch.
 - An interval's work is split into chunks that any thread can run, so a single

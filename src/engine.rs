@@ -86,6 +86,10 @@ pub struct Sample {
     /// Which tokens can be skipped for an event, when enough of them can be
     /// for it to pay; see [`crate::prefilter`].
     pub token_prefilter: Option<crate::prefilter::TokenPrefilter>,
+    /// Each sample line precompiled into literals and value slots, so events
+    /// are written without a regex; None when off or when a line renders
+    /// differently that way. See [`crate::template`].
+    pub templates: Option<crate::template::Templates>,
     /// Identity rotation state, shared by every `rotate` token in the stanza,
     /// or None when the stanza does not rotate.
     pub rotation: Option<Arc<rotate::State>>,
@@ -289,6 +293,7 @@ impl Sample {
             replay_lines: Vec::new(),
             data,
             token_prefilter: crate::prefilter::TokenPrefilter::build(&tokens),
+            templates: None,
             tokens,
             rotation,
             host_token,
@@ -296,6 +301,16 @@ impl Sample {
             conf,
         };
         let _ = parse_bool;
+        if templates_enabled(&s.conf) {
+            s.templates = crate::template::Templates::build(
+                &s.name,
+                &s.data.lines,
+                &s.tokens,
+                s.token_prefilter.as_ref(),
+                &s.rate_maps,
+                s.rotation.is_some(),
+            );
+        }
         if s.generator == Generator::PerDayVolume {
             s.pdv_ratio = gen::perdayvolume_ratio(&s, seed);
         }
@@ -591,6 +606,17 @@ fn stats_loop(stats: Arc<Stats>, stop: Arc<AtomicBool>, every: Duration) {
     }
 }
 
+/// Templates are on unless `FIREBOX_TEMPLATES=0` (or `false`/`off`) or the
+/// stanza sets `templates = false`.
+fn templates_enabled(conf: &StanzaConf) -> bool {
+    if let Ok(v) = std::env::var("FIREBOX_TEMPLATES") {
+        if matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no") {
+            return false;
+        }
+    }
+    conf.get_bool("templates").unwrap_or(true)
+}
+
 fn make_rng(seed: Option<u64>, salt: u64) -> SmallRng {
     match seed {
         Some(s) => SmallRng::seed_from_u64(s.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(salt)),
@@ -845,6 +871,8 @@ struct WorkerState {
     rx_local: Vec<(usize, Vec<RxLocal>, Option<RxLocal>)>,
     /// Scratch for the token prefilter: which tokens can match this event.
     present: Vec<bool>,
+    /// Scratch for rendering templated lines.
+    tpl: crate::template::Scratch,
 }
 
 impl WorkerState {
@@ -889,6 +917,7 @@ fn worker_loop(
         ts_cache: Box::new([None; 256]),
         rx_local: Vec::new(),
         present: Vec::new(),
+        tpl: Default::default(),
     };
     for job in rx.iter() {
         if stop.load(Ordering::Relaxed) {
@@ -935,13 +964,14 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
     let mut bytes = 0u64;
     let li = st.local_rx_index(&job.sample);
     {
-        let WorkerState { rng, events, pool, ts_cache, rx_local, present, .. } = st;
+        let WorkerState { rng, events, pool, ts_cache, rx_local, present, tpl, .. } = st;
         let (_, tok_rx, host_rx) = &mut rx_local[li];
         let mut ctx = EventCtx::new(rng, job.now, &s.rate_maps);
         ctx.et = Some(et);
         ctx.lt = Some(lt);
         let cache: &mut [Option<(i64, Ts)>; 256] = ts_cache;
-        let mut emit = |line: &sample::Line, seq_i: Option<usize>, ctx: &mut EventCtx<'_>| {
+        let mut emit = |idx: usize, seq_i: Option<usize>, ctx: &mut EventCtx<'_>| {
+            let line = &s.data.lines[idx];
             ctx.begin_event();
             let pivot_epoch: i64;
             let pivot = match (s.sequential_timestamp && s.generator != Generator::PerDayVolume, seq_i, job.seq) {
@@ -974,9 +1004,18 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                 ctx.rotate_at = Some(rotate::Position::new(ordinal, pivot_epoch));
             }
             let mut raw = pool.pop().unwrap_or_default();
-            raw.clear();
-            raw.push_str(&line.raw);
-            crate::prefilter::apply_tokens(&s.tokens, tok_rx, s.token_prefilter.as_ref(), present, &mut raw, ctx);
+            crate::template::render_line(
+                &s.tokens,
+                s.templates.as_ref(),
+                idx,
+                &line.raw,
+                tok_rx,
+                s.token_prefilter.as_ref(),
+                present,
+                tpl,
+                &mut raw,
+                ctx,
+            );
             let mut meta = match &line.meta {
                 Some(m) => match &batch_index {
                     Some(idx) => Arc::new(Meta {
@@ -1016,23 +1055,22 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                         Some(base) => ((base + seq_i.unwrap_or(i) as u64) % n as u64) as usize,
                         None => (start + i) % n,
                     };
-                    emit(&s.data.lines[idx], seq_i, &mut ctx);
+                    emit(idx, seq_i, &mut ctx);
                 }
             }
             Plan::RandomLines { count } => {
                 for i in 0..*count {
                     let idx = ctx.rng.random_range(0..n);
-                    let line = &s.data.lines[idx];
                     let seq_i = job.seq.map(|(off, _)| off + i);
-                    emit(line, seq_i, &mut ctx);
+                    emit(idx, seq_i, &mut ctx);
                 }
             }
             Plan::Bundle { copies } => {
                 let mut i = 0usize;
                 for _ in 0..*copies {
-                    for line in &s.data.lines {
+                    for idx in 0..n {
                         let seq_i = job.seq.map(|(off, _)| off + i);
-                        emit(line, seq_i, &mut ctx);
+                        emit(idx, seq_i, &mut ctx);
                         i += 1;
                     }
                 }
@@ -1042,9 +1080,8 @@ fn run_job(job: &Job, st: &mut WorkerState, stats: &Stats) -> anyhow::Result<()>
                 let mut i = 0usize;
                 while cur < *size {
                     let idx = ctx.rng.random_range(0..n);
-                    let line = &s.data.lines[idx];
-                    emit(line, job.seq.map(|(off, _)| off + i), &mut ctx);
-                    cur += line.size as u64;
+                    emit(idx, job.seq.map(|(off, _)| off + i), &mut ctx);
+                    cur += s.data.lines[idx].size as u64;
                     i += 1;
                 }
             }
